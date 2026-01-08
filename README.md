@@ -4,7 +4,9 @@
   <img src="screenshot.png" alt="Claude Usage Screenshot" width="300">
 </p>
 
-A lightweight macOS menubar app that displays your Claude Code usage limits at a glance.
+A lightweight macOS menubar app that displays your Claude Code usage limits at a glance. 
+<br><Br>
+Built by [@richhickson](https://x.com/richhickson)
 
 ## Features
 
