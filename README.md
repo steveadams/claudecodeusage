@@ -67,7 +67,7 @@ Claude Usage reads your Claude Code OAuth credentials from macOS Keychain and qu
 - No data sent anywhere except Anthropic's API
 - Open source - verify the code yourself
 
-## Screenshots
+## Status Colours
 
 | Normal | Warning | Critical |
 |--------|---------|----------|
