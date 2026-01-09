@@ -1,0 +1,18 @@
+# Project notes (contains local paths and credentials info)
+CLAUDE.md
+
+# Build artifacts
+build/
+dist/
+.build/
+DerivedData/
+
+# Xcode
+*.xcodeproj/project.xcworkspace/
+*.xcodeproj/xcuserdata/
+*.xcworkspace/xcuserdata/
+
+# macOS
+.DS_Store
+*.swp
+*~
