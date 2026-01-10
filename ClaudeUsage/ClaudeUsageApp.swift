@@ -26,6 +26,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
         setupStatusItem()
         setupPopover()
+        setupWakeNotification()
 
         // Show first launch explanation if needed
         if !UserDefaults.standard.bool(forKey: hasLaunchedKey) {
@@ -35,6 +36,24 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             }
         } else {
             startFetching()
+        }
+    }
+
+    func setupWakeNotification() {
+        NSWorkspace.shared.notificationCenter.addObserver(
+            self,
+            selector: #selector(handleWake),
+            name: NSWorkspace.didWakeNotification,
+            object: nil
+        )
+    }
+
+    @objc func handleWake() {
+        // Delay refresh after wake to allow keychain to unlock
+        Task {
+            try? await Task.sleep(nanoseconds: 3_000_000_000) // 3 seconds
+            await usageManager.refresh()
+            updateStatusItem()
         }
     }
 
@@ -67,7 +86,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     
     func setupStatusItem() {
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
-        
+
         if let button = statusItem?.button {
             button.title = "⏳"
             button.action = #selector(togglePopover)
@@ -84,7 +103,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     
     func updateStatusItem() {
         guard let button = statusItem?.button else { return }
-        
+
         if let usage = usageManager.usage {
             let sessionPct = usage.sessionPercentage
             let emoji = usageManager.statusEmoji

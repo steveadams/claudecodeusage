@@ -213,15 +213,6 @@ struct UsageView: View {
                 .disabled(manager.isLoading)
 
                 Button(action: {
-                    openURL(URL(string: "https://x.com/richhickson")!)
-                }) {
-                    Text("𝕏")
-                        .font(.system(size: 12, weight: .bold))
-                }
-                .buttonStyle(.borderless)
-                .help("Follow me on X")
-
-                Button(action: {
                     openURL(URL(string: "https://claude.ai")!)
                 }) {
                     Image(systemName: "globe")
@@ -236,6 +227,17 @@ struct UsageView: View {
                 .buttonStyle(.borderless)
             }
             .padding(.horizontal)
+
+            Divider()
+
+            Button(action: {
+                openURL(URL(string: "https://x.com/richhickson")!)
+            }) {
+                Text("Created by @richhickson")
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+            }
+            .buttonStyle(.borderless)
             .padding(.bottom, 8)
         }
         .background(Color(NSColor.controlBackgroundColor))

@@ -42,6 +42,10 @@ class UsageManager: ObservableObject {
     }
 
     func refresh() async {
+        await refreshWithRetry(retriesRemaining: 3)
+    }
+
+    private func refreshWithRetry(retriesRemaining: Int) async {
         isLoading = true
         error = nil
 
@@ -53,7 +57,21 @@ class UsageManager: ObservableObject {
             usage = data
             lastUpdated = Date()
         } catch let keychainError as KeychainError {
+            // Retry on keychain errors that may resolve after unlock
+            if retriesRemaining > 0 && keychainError.isRetryable {
+                try? await Task.sleep(nanoseconds: 2_000_000_000) // 2 seconds
+                await refreshWithRetry(retriesRemaining: retriesRemaining - 1)
+                return
+            }
             self.error = keychainError.localizedDescription
+        } catch let urlError as URLError {
+            // Retry on network errors (common after wake from sleep)
+            if retriesRemaining > 0 && urlError.isRetryable {
+                try? await Task.sleep(nanoseconds: 3_000_000_000) // 3 seconds for network
+                await refreshWithRetry(retriesRemaining: retriesRemaining - 1)
+                return
+            }
+            self.error = urlError.localizedDescription
         } catch {
             self.error = error.localizedDescription
         }
@@ -206,6 +224,16 @@ enum KeychainError: LocalizedError {
             return "Keychain error (code: \(status))"
         }
     }
+
+    /// Errors that may resolve after the keychain unlocks (post-sleep/lock)
+    var isRetryable: Bool {
+        switch self {
+        case .invalidCredentialFormat, .invalidData, .interactionNotAllowed:
+            return true
+        case .notLoggedIn, .accessDenied, .unexpectedError:
+            return false
+        }
+    }
 }
 
 enum UsageError: LocalizedError {
@@ -221,6 +249,24 @@ enum UsageError: LocalizedError {
                 return "Authentication expired. Run 'claude' to re-authenticate."
             }
             return "API error (code: \(code))"
+        }
+    }
+}
+
+extension URLError {
+    /// Network errors that may resolve after wake from sleep
+    var isRetryable: Bool {
+        switch self.code {
+        case .notConnectedToInternet,
+             .networkConnectionLost,
+             .dnsLookupFailed,
+             .cannotFindHost,
+             .cannotConnectToHost,
+             .timedOut,
+             .secureConnectionFailed:
+            return true
+        default:
+            return false
         }
     }
 }
