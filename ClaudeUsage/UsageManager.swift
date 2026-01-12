@@ -52,7 +52,7 @@ class UsageManager: ObservableObject {
         defer { isLoading = false }
 
         do {
-            let token = try getAccessToken()
+            let token = try await getAccessToken()
             let data = try await fetchUsage(token: token)
             usage = data
             lastUpdated = Date()
@@ -77,41 +77,103 @@ class UsageManager: ObservableObject {
         }
     }
 
-    private func getAccessToken() throws -> String {
-        let query: [String: Any] = [
-            kSecClass as String: kSecClassGenericPassword,
-            kSecAttrService as String: "Claude Code-credentials",
-            kSecReturnData as String: true,
-            kSecMatchLimit as String: kSecMatchLimitOne
-        ]
+    private func getAccessToken() async throws -> String {
+        // Get token from Claude Code's keychain via security CLI
+        return try getClaudeCodeToken()
+    }
 
-        var result: AnyObject?
-        let status = SecItemCopyMatching(query as CFDictionary, &result)
+    /// Get token from Claude Code's keychain using security CLI (avoids ACL prompt!)
+    private func getClaudeCodeToken() throws -> String {
+        // Use security CLI which is already in the keychain ACL
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/usr/bin/security")
+        process.arguments = ["find-generic-password", "-s", "Claude Code-credentials", "-w"]
 
-        // Handle specific Keychain errors
-        switch status {
-        case errSecSuccess:
-            break
-        case errSecItemNotFound:
+        let pipe = Pipe()
+        let errorPipe = Pipe()
+        process.standardOutput = pipe
+        process.standardError = errorPipe
+
+        do {
+            try process.run()
+            process.waitUntilExit()
+        } catch {
+            throw KeychainError.unexpectedError(status: -1)
+        }
+
+        let data = pipe.fileHandleForReading.readDataToEndOfFile()
+        let errorData = errorPipe.fileHandleForReading.readDataToEndOfFile()
+        let errorString = String(data: errorData, encoding: .utf8) ?? ""
+
+        guard process.terminationStatus == 0 else {
+            // Try alternate keychain entry as fallback
+            if let token = try? getAccessTokenFromAlternateKeychain() {
+                return token
+            }
+            // Include error detail for debugging
+            if errorString.contains("could not be found") {
+                throw KeychainError.notLoggedIn
+            }
+            throw KeychainError.securityCommandFailed(errorString.isEmpty ? "Exit code \(process.terminationStatus)" : errorString)
+        }
+
+        guard let jsonString = String(data: data, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !jsonString.isEmpty else {
+            if let token = try? getAccessTokenFromAlternateKeychain() {
+                return token
+            }
             throw KeychainError.notLoggedIn
-        case errSecAuthFailed:
-            throw KeychainError.accessDenied
-        case errSecInteractionNotAllowed:
-            throw KeychainError.interactionNotAllowed
-        default:
-            throw KeychainError.unexpectedError(status: status)
         }
 
-        guard let data = result as? Data,
-              let jsonString = String(data: data, encoding: .utf8) else {
-            throw KeychainError.invalidData
+        // Try to parse as OAuth credentials
+        if let jsonData = jsonString.data(using: .utf8),
+           let json = try? JSONSerialization.jsonObject(with: jsonData) as? [String: Any] {
+            // Check for claudeAiOauth structure
+            if let oauth = json["claudeAiOauth"] as? [String: Any],
+               let accessToken = oauth["accessToken"] as? String {
+                return accessToken
+            }
+            // Show what keys ARE present for debugging
+            let keys = Array(json.keys).joined(separator: ", ")
+            throw KeychainError.missingOAuthToken(availableKeys: keys)
         }
 
-        guard let jsonData = jsonString.data(using: .utf8),
+        // Primary entry doesn't have OAuth - try alternate keychain
+        if let token = try? getAccessTokenFromAlternateKeychain() {
+            return token
+        }
+
+        throw KeychainError.invalidCredentialFormat
+    }
+
+    /// Fallback: Check for "Claude Code" keychain entry (alternate storage location)
+    private func getAccessTokenFromAlternateKeychain() throws -> String {
+        // Use security CLI which is already in the keychain ACL
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/usr/bin/security")
+        process.arguments = ["find-generic-password", "-s", "Claude Code", "-w"]
+
+        let pipe = Pipe()
+        process.standardOutput = pipe
+        process.standardError = pipe
+
+        do {
+            try process.run()
+            process.waitUntilExit()
+        } catch {
+            throw KeychainError.notLoggedIn
+        }
+
+        let data = pipe.fileHandleForReading.readDataToEndOfFile()
+
+        guard process.terminationStatus == 0,
+              let jsonString = String(data: data, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !jsonString.isEmpty,
+              let jsonData = jsonString.data(using: .utf8),
               let json = try? JSONSerialization.jsonObject(with: jsonData) as? [String: Any],
               let oauth = json["claudeAiOauth"] as? [String: Any],
               let accessToken = oauth["accessToken"] as? String else {
-            throw KeychainError.invalidCredentialFormat
+            throw KeychainError.notLoggedIn
         }
 
         return accessToken
@@ -207,6 +269,8 @@ enum KeychainError: LocalizedError {
     case invalidData
     case invalidCredentialFormat
     case unexpectedError(status: OSStatus)
+    case securityCommandFailed(String)
+    case missingOAuthToken(availableKeys: String)
 
     var errorDescription: String? {
         switch self {
@@ -219,18 +283,23 @@ enum KeychainError: LocalizedError {
         case .invalidData:
             return "Could not read Keychain data"
         case .invalidCredentialFormat:
-            return "Invalid credential format. Try running 'claude' to re-authenticate."
+            return "Invalid credential format in keychain"
         case .unexpectedError(let status):
             return "Keychain error (code: \(status))"
+        case .securityCommandFailed(let error):
+            return "Keychain access failed: \(error.trimmingCharacters(in: .whitespacesAndNewlines))"
+        case .missingOAuthToken(let keys):
+            return "No OAuth token in keychain. Found keys: \(keys). Try 'claude' to re-login."
         }
     }
 
-    /// Errors that may resolve after the keychain unlocks (post-sleep/lock)
+    /// Errors that may resolve after the keychain unlocks (post-sleep/lock/boot)
     var isRetryable: Bool {
         switch self {
-        case .invalidCredentialFormat, .invalidData, .interactionNotAllowed:
+        case .notLoggedIn, .invalidCredentialFormat, .invalidData, .interactionNotAllowed, .securityCommandFailed:
+            // notLoggedIn is retryable because keychain may not be accessible immediately after boot
             return true
-        case .notLoggedIn, .accessDenied, .unexpectedError:
+        case .accessDenied, .unexpectedError, .missingOAuthToken:
             return false
         }
     }
