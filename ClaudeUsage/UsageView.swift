@@ -554,7 +554,6 @@ extension UsageManager {
         return manager
     }
 }
-#endif
 
 // MARK: - Previews
 
@@ -745,3 +744,4 @@ struct MenuBarLoadingPreview: View {
     }
     .padding()
 }
+#endif
