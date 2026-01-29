@@ -9,9 +9,57 @@ struct UsageData {
     let sonnetUtilization: Double?
     let sonnetResetsAt: Date?
 
+    // Optional overrides for preview/testing (when set, bypass computed logic)
+    private let _sessionPeriodProgress: Int?
+    private let _weeklyPeriodProgress: Int?
+
     var sessionPercentage: Int { Int(sessionUtilization) }
     var weeklyPercentage: Int { Int(weeklyUtilization) }
     var sonnetPercentage: Int? { sonnetUtilization.map { Int($0) } }
+
+    /// How far through the 5-hour session period (0-100%)
+    var sessionPeriodProgress: Int? {
+        if let override = _sessionPeriodProgress { return override }
+        guard let resetsAt = sessionResetsAt else { return nil }
+        let periodDuration: TimeInterval = 5 * 60 * 60 // 5 hours in seconds
+        let periodStart = resetsAt.addingTimeInterval(-periodDuration)
+        let now = Date()
+        let elapsed = now.timeIntervalSince(periodStart)
+        let progress = (elapsed / periodDuration) * 100
+        return Int(min(max(progress, 0), 100))
+    }
+
+    /// How far through the 7-day billing period (0-100%)
+    var weeklyPeriodProgress: Int? {
+        if let override = _weeklyPeriodProgress { return override }
+        guard let resetsAt = weeklyResetsAt else { return nil }
+        let periodDuration: TimeInterval = 7 * 24 * 60 * 60 // 7 days in seconds
+        let periodStart = resetsAt.addingTimeInterval(-periodDuration)
+        let now = Date()
+        let elapsed = now.timeIntervalSince(periodStart)
+        let progress = (elapsed / periodDuration) * 100
+        return Int(min(max(progress, 0), 100))
+    }
+
+    init(
+        sessionUtilization: Double,
+        sessionResetsAt: Date?,
+        weeklyUtilization: Double,
+        weeklyResetsAt: Date?,
+        sonnetUtilization: Double? = nil,
+        sonnetResetsAt: Date? = nil,
+        sessionPeriodProgress: Int? = nil,
+        weeklyPeriodProgress: Int? = nil
+    ) {
+        self.sessionUtilization = sessionUtilization
+        self.sessionResetsAt = sessionResetsAt
+        self.weeklyUtilization = weeklyUtilization
+        self.weeklyResetsAt = weeklyResetsAt
+        self.sonnetUtilization = sonnetUtilization
+        self.sonnetResetsAt = sonnetResetsAt
+        self._sessionPeriodProgress = sessionPeriodProgress
+        self._weeklyPeriodProgress = weeklyPeriodProgress
+    }
 }
 
 @MainActor
@@ -20,10 +68,8 @@ class UsageManager: ObservableObject {
     @Published var error: String?
     @Published var isLoading = false
     @Published var lastUpdated: Date?
-    @Published var updateAvailable: String?
 
     static let currentVersion = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "1.0.0"
-    static let githubRepo = "richhickson/claudecodeusage"
 
     // Configured URLSession with timeouts
     private lazy var urlSession: URLSession = {
@@ -220,45 +266,18 @@ class UsageManager: ObservableObject {
         guard let string = string else { return nil }
         let formatter = ISO8601DateFormatter()
         formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-        if let date = formatter.date(from: string) {
-            return date
+        var date = formatter.date(from: string)
+        if date == nil {
+            formatter.formatOptions = [.withInternetDateTime]
+            date = formatter.date(from: string)
         }
-        formatter.formatOptions = [.withInternetDateTime]
-        return formatter.date(from: string)
-    }
-
-    func checkForUpdates() async {
-        guard let url = URL(string: "https://api.github.com/repos/\(Self.githubRepo)/releases/latest") else { return }
-
-        var request = URLRequest(url: url)
-        request.setValue("application/vnd.github.v3+json", forHTTPHeaderField: "Accept")
-        request.setValue("ClaudeUsage/\(Self.currentVersion)", forHTTPHeaderField: "User-Agent")
-
-        do {
-            let (data, _) = try await urlSession.data(for: request)
-            if let json = try JSONSerialization.jsonObject(with: data) as? [String: Any],
-               let tagName = json["tag_name"] as? String {
-                let latestVersion = tagName.trimmingCharacters(in: CharacterSet(charactersIn: "v"))
-                if isNewerVersion(latestVersion, than: Self.currentVersion) {
-                    updateAvailable = latestVersion
-                }
-            }
-        } catch {
-            // Silently fail - update check is not critical
+        // Round to nearest minute to avoid jitter from API timestamps near second boundaries
+        if let date = date {
+            let seconds = date.timeIntervalSinceReferenceDate
+            let roundedSeconds = (seconds / 60).rounded() * 60
+            return Date(timeIntervalSinceReferenceDate: roundedSeconds)
         }
-    }
-
-    private func isNewerVersion(_ latest: String, than current: String) -> Bool {
-        let latestParts = latest.split(separator: ".").compactMap { Int($0) }
-        let currentParts = current.split(separator: ".").compactMap { Int($0) }
-
-        for i in 0..<max(latestParts.count, currentParts.count) {
-            let l = i < latestParts.count ? latestParts[i] : 0
-            let c = i < currentParts.count ? currentParts[i] : 0
-            if l > c { return true }
-            if l < c { return false }
-        }
-        return false
+        return nil
     }
 }
 
