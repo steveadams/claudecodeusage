@@ -201,9 +201,10 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         let usageRadius = (size - usageLineWidth) / 2 - periodLineWidth - gap
         let periodRadius = (size - periodLineWidth) / 2
 
-        // Dark colors for visibility on grey menu bar
-        let periodColor = NSColor(white: 0.4, alpha: 1)  // Dark grey
-        let usageFillColor = NSColor(white: 0.15, alpha: 1)  // Almost black
+        // Use label color which adapts to menu bar appearance (light/dark)
+        let isDarkMenuBar = statusItem?.button?.effectiveAppearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
+        let periodColor = isDarkMenuBar ? NSColor(white: 0.7, alpha: 1) : NSColor(white: 0.4, alpha: 1)
+        let usageFillColor = isDarkMenuBar ? NSColor(white: 0.9, alpha: 1) : NSColor(white: 0.15, alpha: 1)
 
         image.lockFocus()
 

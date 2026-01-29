@@ -48,16 +48,16 @@ struct UsageView: View {
             footerView()
         }
         .frame(width: 280)
-        .background(Color.white)
+        .background(Color(NSColor.windowBackgroundColor))
     }
 
         // MARK: Usage Content
     
     @ViewBuilder
     func usageContent(_ usage: UsageData) -> some View {
-        VStack(spacing: 16) {
+        VStack() {
             // Circular gauges
-            HStack(spacing: 8) {
+            HStack() {
                 // 5-hour session gauge
                 let sessionTime = formatTimeRemaining(usage.sessionResetsAt)
                 PeriodGaugeCard(
@@ -79,10 +79,12 @@ struct UsageView: View {
                     isSession: false
                 )
             }
+
             if let lastUpdated = manager.lastUpdated {
                 Text("Updated \(lastUpdated.formatted(.relative(presentation: .named)))")
                     .font(.caption)
                     .foregroundColor(.secondary)
+                    .padding()
             }
         }
         .padding()
@@ -606,9 +608,9 @@ struct MenuBarGaugePreview: View {
     private let startAngle: Double = -90
     private let totalSweep: Double = 360
 
-    // Dark colors for visibility on grey menu bar
-    private let periodColor = Color(white: 0.4)  // Dark grey
-    private let usageColor = Color(white: 0.15)  // Almost black
+    // Adaptive colors that work in light and dark mode
+    private let periodColor = Color.primary.opacity(0.5)
+    private let usageColor = Color.primary
 
     private var usageAngle: Double {
         startAngle + (Double(usagePercent) / 100.0) * totalSweep
