@@ -32,6 +32,32 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
+      - name: Import Code Signing Certificate
+        if: steps.check_release.outputs.exists == 'false'
+        env:
+          APPLE_CERTIFICATE_BASE64: ${{ secrets.APPLE_CERTIFICATE_BASE64 }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+        run: |
+          # Create variables
+          CERTIFICATE_PATH=$RUNNER_TEMP/certificate.p12
+          KEYCHAIN_PATH=$RUNNER_TEMP/app-signing.keychain-db
+          KEYCHAIN_PASSWORD=$(openssl rand -base64 32)
+
+          # Decode certificate
+          echo -n "$APPLE_CERTIFICATE_BASE64" | base64 --decode -o $CERTIFICATE_PATH
+
+          # Create temporary keychain
+          security create-keychain -p "$KEYCHAIN_PASSWORD" $KEYCHAIN_PATH
+          security set-keychain-settings -lut 21600 $KEYCHAIN_PATH
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" $KEYCHAIN_PATH
+
+          # Import certificate to keychain
+          security import $CERTIFICATE_PATH -P "$APPLE_CERTIFICATE_PASSWORD" -A -t cert -f pkcs12 -k $KEYCHAIN_PATH
+          security set-key-partition-list -S apple-tool:,apple: -k "$KEYCHAIN_PASSWORD" $KEYCHAIN_PATH
+
+          # Add keychain to search list
+          security list-keychain -d user -s $KEYCHAIN_PATH
+
       - name: Build Release
         if: steps.check_release.outputs.exists == 'false'
         run: |
@@ -39,15 +65,51 @@ jobs:
             -scheme ClaudeUsage \
             -configuration Release \
             -derivedDataPath build \
-            CODE_SIGN_IDENTITY="-" \
-            CODE_SIGNING_REQUIRED=NO \
-            CODE_SIGNING_ALLOWED=NO
+            CODE_SIGN_STYLE=Manual \
+            CODE_SIGN_IDENTITY="Developer ID Application" \
+            DEVELOPMENT_TEAM="${{ secrets.APPLE_TEAM_ID }}" \
+            OTHER_CODE_SIGN_FLAGS="--timestamp --options=runtime"
 
-      - name: Create Zip
+      - name: Notarize App
+        if: steps.check_release.outputs.exists == 'false'
+        env:
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_ID_PASSWORD: ${{ secrets.APPLE_ID_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          APP_PATH="build/Build/Products/Release/ClaudeUsage.app"
+          ZIP_PATH="build/Build/Products/Release/ClaudeUsage-notarize.zip"
+
+          # Create zip for notarization
+          ditto -c -k --keepParent "$APP_PATH" "$ZIP_PATH"
+
+          # Submit for notarization
+          xcrun notarytool submit "$ZIP_PATH" \
+            --apple-id "$APPLE_ID" \
+            --password "$APPLE_ID_PASSWORD" \
+            --team-id "$APPLE_TEAM_ID" \
+            --wait
+
+          # Staple the notarization ticket to the app
+          xcrun stapler staple "$APP_PATH"
+
+          # Clean up notarization zip
+          rm "$ZIP_PATH"
+
+      - name: Create Release Zip
         if: steps.check_release.outputs.exists == 'false'
         run: |
           cd build/Build/Products/Release
           zip -r ClaudeUsage.zip ClaudeUsage.app
+
+      - name: Verify Code Signing
+        if: steps.check_release.outputs.exists == 'false'
+        run: |
+          echo "=== Code Signing Verification ==="
+          codesign -dv --verbose=4 build/Build/Products/Release/ClaudeUsage.app
+          echo ""
+          echo "=== Gatekeeper Verification ==="
+          spctl -a -v build/Build/Products/Release/ClaudeUsage.app
 
       - name: Create Release
         if: steps.check_release.outputs.exists == 'false'
@@ -57,3 +119,11 @@ jobs:
           name: v${{ steps.version.outputs.version }}
           files: build/Build/Products/Release/ClaudeUsage.zip
           generate_release_notes: true
+
+      - name: Cleanup Keychain
+        if: always()
+        run: |
+          KEYCHAIN_PATH=$RUNNER_TEMP/app-signing.keychain-db
+          if [ -f "$KEYCHAIN_PATH" ]; then
+            security delete-keychain $KEYCHAIN_PATH
+          fi
