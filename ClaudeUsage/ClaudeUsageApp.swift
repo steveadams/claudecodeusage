@@ -35,6 +35,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     var loadingAnimationTimer: Timer?
     var loadingAnimationPhase: Double = 0
     var cancellables = Set<AnyCancellable>()
+    var eventMonitor: Any?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         // Skip full app setup when running in SwiftUI preview canvas
@@ -273,14 +274,32 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     
     @objc func togglePopover() {
         guard let button = statusItem?.button, let popover = popover else { return }
-        
+
         if popover.isShown {
-            popover.performClose(nil)
+            closePopover()
         } else {
             popover.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
-            
-            // Bring to front
-            NSApp.activate(ignoringOtherApps: true)
+            addEventMonitor()
+        }
+    }
+
+    func closePopover() {
+        popover?.performClose(nil)
+        removeEventMonitor()
+    }
+
+    func addEventMonitor() {
+        eventMonitor = NSEvent.addGlobalMonitorForEvents(matching: [.leftMouseDown, .rightMouseDown]) { [weak self] _ in
+            if self?.popover?.isShown == true {
+                self?.closePopover()
+            }
+        }
+    }
+
+    func removeEventMonitor() {
+        if let monitor = eventMonitor {
+            NSEvent.removeMonitor(monitor)
+            eventMonitor = nil
         }
     }
 }
