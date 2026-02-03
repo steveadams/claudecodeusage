@@ -55,8 +55,12 @@ jobs:
           security import $CERTIFICATE_PATH -P "$APPLE_CERTIFICATE_PASSWORD" -A -t cert -f pkcs12 -k $KEYCHAIN_PATH
           security set-key-partition-list -S apple-tool:,apple: -k "$KEYCHAIN_PASSWORD" $KEYCHAIN_PATH
 
-          # Add keychain to search list
-          security list-keychain -d user -s $KEYCHAIN_PATH
+          # Add keychain to search list (prepend to existing list)
+          security list-keychain -d user -s $KEYCHAIN_PATH $(security list-keychain -d user | sed 's/"//g')
+
+          # Verify certificate was imported
+          echo "=== Certificates in keychain ==="
+          security find-identity -v -p codesigning $KEYCHAIN_PATH
 
       - name: Build Release
         if: steps.check_release.outputs.exists == 'false'
