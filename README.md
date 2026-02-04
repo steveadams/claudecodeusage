@@ -1,7 +1,7 @@
 # Claude Usage
 
 <p align="center">
-  <img width="300" alt="CleanShot 2026-02-03 at 20 21 15@2x" src="https://github.com/user-attachments/assets/14e7361c-b5a6-4b27-b81a-b9a5979f345b" />
+  <img width="400" alt="CleanShot 2026-02-03 at 20 21 15@2x" src="https://github.com/user-attachments/assets/14e7361c-b5a6-4b27-b81a-b9a5979f345b" />
 </p>
 
 A lightweight macOS menubar app that displays your Claude Code usage limits at a glance. 
