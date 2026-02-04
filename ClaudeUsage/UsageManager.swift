@@ -1,5 +1,8 @@
 import Foundation
 import Security
+import os.log
+
+private let logger = Logger(subsystem: "com.steveadams.ClaudeUsage", category: "UsageManager")
 
 struct UsageData {
     let sessionUtilization: Double
@@ -252,6 +255,19 @@ class UsageManager: ObservableObject {
         let sevenDay = json["seven_day"] as? [String: Any]
         let sonnetOnly = json["sonnet_only"] as? [String: Any]
 
+        // Log API response for debugging
+        logger.info("API response keys: \(json.keys.joined(separator: ", "))")
+        if let fiveHour = fiveHour {
+            logger.info("five_hour: utilization=\(fiveHour["utilization"] as? Double ?? -1), resets_at=\(fiveHour["resets_at"] as? String ?? "nil")")
+        } else {
+            logger.warning("five_hour is nil in API response")
+        }
+        if let sevenDay = sevenDay {
+            logger.info("seven_day: utilization=\(sevenDay["utilization"] as? Double ?? -1), resets_at=\(sevenDay["resets_at"] as? String ?? "nil")")
+        } else {
+            logger.warning("seven_day is nil in API response")
+        }
+
         return UsageData(
             sessionUtilization: fiveHour?["utilization"] as? Double ?? 0,
             sessionResetsAt: parseDate(fiveHour?["resets_at"] as? String),
@@ -263,13 +279,19 @@ class UsageManager: ObservableObject {
     }
 
     private func parseDate(_ string: String?) -> Date? {
-        guard let string = string else { return nil }
+        guard let string = string else {
+            logger.debug("parseDate: input string is nil")
+            return nil
+        }
         let formatter = ISO8601DateFormatter()
         formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
         var date = formatter.date(from: string)
         if date == nil {
             formatter.formatOptions = [.withInternetDateTime]
             date = formatter.date(from: string)
+        }
+        if date == nil {
+            logger.warning("parseDate: failed to parse '\(string)'")
         }
         // Round to nearest minute to avoid jitter from API timestamps near second boundaries
         if let date = date {

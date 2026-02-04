@@ -51,43 +51,105 @@ struct UsageView: View {
         .background(Color(NSColor.windowBackgroundColor))
     }
 
-        // MARK: Usage Content
-    
+    // MARK: Usage Content
+
     @ViewBuilder
     func usageContent(_ usage: UsageData) -> some View {
-        VStack() {
-            // Circular gauges
-            HStack() {
-                // 5-hour session gauge
-                let sessionTime = formatTimeRemaining(usage.sessionResetsAt)
-                PeriodGaugeCard(
-                    title: "5 hour",
-                    duration: sessionTime?.duration,
-                    resetTime: sessionTime?.resetTime,
-                    usagePercent: usage.sessionPercentage,
-                    periodPercent: usage.sessionPeriodProgress ?? 0
-                )
+        VStack(spacing: 16) {
+            // Table layout with columns (5 HOUR, 7 DAY) and rows (USAGE, PERIOD)
+            let sessionTime = formatTimeRemaining(usage.sessionResetsAt)
+            let weeklyTime = formatTimeRemaining(usage.weeklyResetsAt)
 
-                // 7-day period gauge
-                let weeklyTime = formatTimeRemaining(usage.weeklyResetsAt)
-                PeriodGaugeCard(
-                    title: "7 day",
-                    duration: weeklyTime?.duration,
-                    resetTime: weeklyTime?.resetTime,
-                    usagePercent: usage.weeklyPercentage,
-                    periodPercent: usage.weeklyPeriodProgress ?? 0,
-                    isSession: false
-                )
+            let rowHeight: CGFloat = 26
+
+            Grid(horizontalSpacing: 24, verticalSpacing: 8) {
+                // Header row
+                GridRow {
+                    Text("")
+                        .gridColumnAlignment(.leading)
+                    Text("5 HOUR")
+                        .font(.system(size: 10, weight: .semibold, design: .monospaced))
+                        .foregroundColor(.secondary)
+                        .gridColumnAlignment(.leading)
+                    Text("7 DAY")
+                        .font(.system(size: 10, weight: .semibold, design: .monospaced))
+                        .foregroundColor(.secondary)
+                        .gridColumnAlignment(.leading)
+                }
+                .frame(height: rowHeight)
+
+                // USAGE row
+                GridRow(alignment: .center) {
+                    Text("USAGE")
+                        .font(.system(size: 9, weight: .medium, design: .monospaced))
+                        .foregroundColor(.secondary.opacity(0.8))
+                    UsageGaugeCell(
+                        percent: usage.sessionPercentage,
+                        periodPercent: usage.sessionPeriodProgress ?? 0,
+                        isUsage: true
+                    )
+                    UsageGaugeCell(
+                        percent: usage.weeklyPercentage,
+                        periodPercent: usage.weeklyPeriodProgress ?? 0,
+                        isUsage: true
+                    )
+                }
+                .frame(height: rowHeight)
+
+                // PERIOD row
+                GridRow(alignment: .center) {
+                    Text("PERIOD")
+                        .font(.system(size: 9, weight: .medium, design: .monospaced))
+                        .foregroundColor(.secondary.opacity(0.8))
+                    UsageGaugeCell(
+                        percent: usage.sessionPeriodProgress ?? 0,
+                        periodPercent: nil,
+                        isUsage: false
+                    )
+                    UsageGaugeCell(
+                        percent: usage.weeklyPeriodProgress ?? 0,
+                        periodPercent: nil,
+                        isUsage: false
+                    )
+                }
+                .frame(height: rowHeight)
+
+                // Reset time row
+                GridRow(alignment: .center) {
+                    Text("RESET")
+                        .font(.system(size: 9, weight: .medium, design: .monospaced))
+                        .foregroundColor(.secondary.opacity(0.8))
+                    if let sessionTime = sessionTime {
+                        Text("\(sessionTime.duration) - \(sessionTime.resetTime)")
+                            .font(.system(size: 10, design: .monospaced))
+                            .foregroundColor(.secondary)
+                    } else {
+                        Text("—")
+                            .font(.system(size: 10, design: .monospaced))
+                            .foregroundColor(.secondary)
+                    }
+                    if let weeklyTime = weeklyTime {
+                        Text("\(weeklyTime.duration) - \(weeklyTime.resetTime)")
+                            .font(.system(size: 10, design: .monospaced))
+                            .foregroundColor(.secondary)
+                    } else {
+                        Text("—")
+                            .font(.system(size: 10, design: .monospaced))
+                            .foregroundColor(.secondary)
+                    }
+                }
+                .frame(height: rowHeight)
             }
+            .frame(maxWidth: .infinity, alignment: .leading)
 
             if let lastUpdated = manager.lastUpdated {
                 Text("Updated \(lastUpdated.formatted(.relative(presentation: .named)))")
                     .font(.caption)
                     .foregroundColor(.secondary)
-                    .padding()
             }
         }
-        .padding()
+        .padding(.horizontal)
+        .padding(.vertical)
     }
     
     @ViewBuilder
@@ -196,7 +258,7 @@ struct UsageView: View {
     func formatTimeRemaining(_ date: Date?) -> (duration: String, resetTime: String)? {
         guard let date = date else { return nil }
         let diff = date.timeIntervalSince(Date())
-        if diff <= 0 { return ("soon", "now") }
+        if diff <= 0 { return ("SOON", "NOW") }
 
         let totalHours = diff / 3600
 
@@ -205,26 +267,26 @@ struct UsageView: View {
         if totalHours >= 24 {
             let days = totalHours / 24
             if days >= 2 {
-                duration = "~\(Int(days.rounded()))d"
+                duration = "\(Int(days.rounded()))D"
             } else {
                 // Show half-day precision for 1-2 days
                 let roundedDays = (days * 2).rounded() / 2
                 if roundedDays == roundedDays.rounded() {
-                    duration = "~\(Int(roundedDays))d"
+                    duration = "\(Int(roundedDays))D"
                 } else {
-                    duration = "~\(String(format: "%.1f", roundedDays))d"
+                    duration = "\(String(format: "%.1f", roundedDays))D"
                 }
             }
         } else if totalHours < 1 {
             let minutes = Int(diff / 60)
-            duration = "~\(minutes)m"
+            duration = "\(minutes)M"
         } else {
             // Round to nearest 0.5h
             let roundedHours = (totalHours * 2).rounded() / 2
             if roundedHours == roundedHours.rounded() {
-                duration = "~\(Int(roundedHours))h"
+                duration = "\(Int(roundedHours))H"
             } else {
-                duration = "~\(String(format: "%.1f", roundedHours))h"
+                duration = "\(String(format: "%.1f", roundedHours))H"
             }
         }
 
@@ -232,14 +294,14 @@ struct UsageView: View {
         let timeFormatter = DateFormatter()
         timeFormatter.dateFormat = "ha"
         timeFormatter.timeZone = .current
-        let timeString = timeFormatter.string(from: date).lowercased()
+        let timeString = timeFormatter.string(from: date).uppercased()
 
         let resetTime: String
         if totalHours >= 24 {
             let dayFormatter = DateFormatter()
             dayFormatter.dateFormat = "EEE"
             dayFormatter.timeZone = .current
-            let dayString = dayFormatter.string(from: date)
+            let dayString = dayFormatter.string(from: date).uppercased()
             resetTime = "\(dayString) \(timeString)"
         } else {
             resetTime = timeString
@@ -262,142 +324,7 @@ struct UsageView: View {
     }
 }
 
-// MARK: - Nested Circular Gauge
-
-struct PeriodGaugeCard: View {
-    let title: String
-    let duration: String?
-    let resetTime: String?
-    let usagePercent: Int
-    let periodPercent: Int
-    var isSession: Bool = true
-
-    var body: some View {
-        VStack(spacing: 4) {
-            // Header
-            Text(title)
-                .font(.caption)
-                .fontWeight(.medium)
-
-            // Gauge
-            CircularGaugeView(
-                usagePercent: usagePercent,
-                periodPercent: periodPercent
-            )
-            .padding(.top, 4)
-
-            // Remaining time (compact single line)
-            if let duration = duration, let resetTime = resetTime {
-                Text("\(duration) · \(resetTime)")
-                    .font(.caption2)
-                    .foregroundColor(.secondary)
-                    .padding(.top, 8)
-                    .help(isSession ? "Time until session resets" : "Time until weekly limit resets")
-            }
-        }
-        .frame(maxWidth: .infinity)
-        .padding()
-    }
-}
-
-struct CircularGaugeView: View {
-    let usagePercent: Int      // Usage (0-100)
-    let periodPercent: Int     // Time progress (0-100) - outer ring
-
-    private let size: CGFloat = 80
-    private let lineWidth: CGFloat = 10
-    private let outerLineWidth: CGFloat = 2
-    private let outerGap: CGFloat = 4
-    private let startAngle: Double = 135   // Bottom-left
-    private let endAngle: Double = 405     // Bottom-right (270° arc)
-
-    // Usage gradient: green → yellow/orange → red
-    private let usageGradientColors: [Color] = [
-        Color(red: 0.2, green: 0.8, blue: 0.3),   // Green
-        Color(red: 0.5, green: 0.85, blue: 0.3),  // Yellow-green
-        Color(red: 0.95, green: 0.8, blue: 0.2),  // Yellow
-        Color(red: 0.95, green: 0.6, blue: 0.2),  // Orange
-        Color(red: 0.95, green: 0.4, blue: 0.3),  // Red-orange
-        Color(red: 0.9, green: 0.25, blue: 0.25), // Red
-    ]
-
-    // Period colors: simple blue progression
-    private let periodColor = Color(red: 0.3, green: 0.5, blue: 0.95)
-    private let periodBackgroundColor = Color(red: 0.3, green: 0.5, blue: 0.95).opacity(0.2)
-
-    private var needleAngle: Double {
-        startAngle + (Double(usagePercent) / 100.0) * (endAngle - startAngle)
-    }
-
-    private var periodAngle: Double {
-        startAngle + (Double(periodPercent) / 100.0) * (endAngle - startAngle)
-    }
-
-    private var outerSize: CGFloat {
-        size + lineWidth + outerGap * 2 + outerLineWidth
-    }
-
-    /// Color sampled from gradient at current usage percentage
-    private var usageColor: Color {
-        let index = Double(usagePercent) / 100.0 * Double(usageGradientColors.count - 1)
-        let clampedIndex = max(0, min(index, Double(usageGradientColors.count - 1)))
-        return usageGradientColors[Int(clampedIndex.rounded())]
-    }
-
-    var body: some View {
-        ZStack {
-            // Outer ring - Period Progress (background)
-            Arc(startAngle: .degrees(startAngle), endAngle: .degrees(endAngle), clockwise: false)
-                .stroke(periodBackgroundColor, style: StrokeStyle(lineWidth: outerLineWidth, lineCap: .butt))
-                .frame(width: outerSize, height: outerSize)
-
-            // Outer ring - Period Progress (filled)
-            Arc(startAngle: .degrees(startAngle), endAngle: .degrees(periodAngle), clockwise: false)
-                .stroke(periodColor, style: StrokeStyle(lineWidth: outerLineWidth, lineCap: .butt))
-                .frame(width: outerSize, height: outerSize)
-
-            // Inner gauge - Background arc (unfilled portion, tinted by usage level)
-            Arc(startAngle: .degrees(startAngle), endAngle: .degrees(endAngle), clockwise: false)
-                .stroke(usageColor.opacity(0.2), style: StrokeStyle(lineWidth: lineWidth, lineCap: .butt))
-                .frame(width: size, height: size)
-
-            // Inner gauge - Gradient arc (filled up to period or usage, whichever is less)
-            Arc(startAngle: .degrees(startAngle), endAngle: .degrees(min(needleAngle, periodAngle)), clockwise: false)
-                .stroke(
-                    AngularGradient(
-                        gradient: Gradient(colors: usageGradientColors),
-                        center: .center,
-                        startAngle: .degrees(startAngle),
-                        endAngle: .degrees(endAngle)
-                    ),
-                    style: StrokeStyle(lineWidth: lineWidth, lineCap: .butt)
-                )
-                .frame(width: size, height: size)
-
-            // Inner gauge - Over pace indicator (red arc when usage exceeds period progress)
-            if usagePercent > periodPercent {
-                Arc(startAngle: .degrees(periodAngle), endAngle: .degrees(needleAngle), clockwise: false)
-                    .stroke(Color(red: 0.9, green: 0.25, blue: 0.25), style: StrokeStyle(lineWidth: lineWidth, lineCap: .butt))
-                    .frame(width: size, height: size)
-            }
-
-            // Needle
-            NeedleView(angle: needleAngle, length: size / 1.75 - lineWidth - 4)
-
-            // Center dot
-            Circle()
-                .fill(Color(NSColor.separatorColor).opacity(0.5))
-                .frame(width: 8, height: 8)
-
-            // Percentage label below
-            Text("\(usagePercent)%")
-                .font(.system(size: 14, weight: .bold, design: .rounded))
-                .foregroundColor(.primary)
-                .offset(y: size / 4 + 8)
-        }
-        .frame(width: outerSize + outerLineWidth, height: outerSize + outerLineWidth)
-    }
-}
+// MARK: - Arc Shape
 
 // Custom arc shape
 struct Arc: Shape {
@@ -414,23 +341,127 @@ struct Arc: Shape {
     }
 }
 
-// Needle indicator
-struct NeedleView: View {
-    let angle: Double
-    let length: CGFloat
+// MARK: - Gauge Cell Component
+
+/// A gauge cell showing percentage above the gauge bar (for table layout)
+struct UsageGaugeCell: View {
+    let percent: Int
+    let periodPercent: Int?  // Only used for usage gauges to show overage
+    let isUsage: Bool
+
+    private let trackHeight: CGFloat = 3
+    private let markerHeight: CGFloat = 10
+    private let markerWidth: CGFloat = 1
+
+    // Usage gradient: green → yellow/orange → red
+    private let usageGradientColors: [Color] = [
+        Color(red: 0.2, green: 0.8, blue: 0.3),   // Green
+        Color(red: 0.5, green: 0.85, blue: 0.3),  // Yellow-green
+        Color(red: 0.95, green: 0.8, blue: 0.2),  // Yellow
+        Color(red: 0.95, green: 0.6, blue: 0.2),  // Orange
+        Color(red: 0.95, green: 0.4, blue: 0.3),  // Red-orange
+        Color(red: 0.9, green: 0.25, blue: 0.25), // Red
+    ]
+
+    // Period color: blue
+    private let periodColor = Color(red: 0.3, green: 0.5, blue: 0.95)
+
+    // Overage color: red
+    private let overageColor = Color(red: 0.9, green: 0.25, blue: 0.25)
+
+    /// Color sampled from gradient at current percentage
+    private var fillColor: Color {
+        if isUsage {
+            let index = Double(percent) / 100.0 * Double(usageGradientColors.count - 1)
+            let clampedIndex = max(0, min(index, Double(usageGradientColors.count - 1)))
+            return usageGradientColors[Int(clampedIndex.rounded())]
+        } else {
+            return periodColor
+        }
+    }
+
+    /// Whether usage exceeds period progress (over-pacing)
+    private var hasOverage: Bool {
+        guard isUsage, let period = periodPercent else { return false }
+        return percent > period
+    }
 
     var body: some View {
-        Capsule()
-            .fill(
-                LinearGradient(
-                    colors: [Color(red: 0.9, green: 0.3, blue: 0.4), Color(red: 0.8, green: 0.2, blue: 0.3)],
-                    startPoint: .bottom,
-                    endPoint: .top
-                )
-            )
-            .frame(width: 2, height: length)
-            .offset(y: -length / 2)
-            .rotationEffect(.degrees(angle + 90))
+        VStack(alignment: .leading, spacing: 0) {
+            // Percentage
+            Text("\(percent)%")
+                .font(.system(size: 10, weight: .medium, design: .monospaced))
+                .foregroundColor(.primary)
+
+            // Gauge track with marker
+            GeometryReader { geometry in
+                let trackWidth = geometry.size.width
+                let markerPosition = trackWidth * CGFloat(percent) / 100.0
+
+                ZStack(alignment: .leading) {
+                    // Background track
+                    RoundedRectangle(cornerRadius: trackHeight / 2)
+                        .fill(fillColor.opacity(0.2))
+                        .frame(height: trackHeight)
+
+                    // Filled track (gradient for usage, solid for period)
+                    if isUsage {
+                        if hasOverage, let period = periodPercent {
+                            // Split fill: gradient up to period, then red overage
+                            let periodPosition = trackWidth * CGFloat(period) / 100.0
+
+                            // Normal gradient up to period progress
+                            RoundedRectangle(cornerRadius: trackHeight / 2)
+                                .fill(
+                                    LinearGradient(
+                                        colors: usageGradientColors,
+                                        startPoint: .leading,
+                                        endPoint: .trailing
+                                    )
+                                )
+                                .frame(width: trackWidth, height: trackHeight)
+                                .mask(alignment: .leading) {
+                                    Rectangle()
+                                        .frame(width: max(0, periodPosition))
+                                }
+
+                            // Red overage section from period to usage
+                            Rectangle()
+                                .fill(overageColor)
+                                .frame(width: max(0, markerPosition - periodPosition), height: trackHeight)
+                                .offset(x: periodPosition)
+                        } else {
+                            // Normal case: gradient spans full width so colors match their position
+                            RoundedRectangle(cornerRadius: trackHeight / 2)
+                                .fill(
+                                    LinearGradient(
+                                        colors: usageGradientColors,
+                                        startPoint: .leading,
+                                        endPoint: .trailing
+                                    )
+                                )
+                                .frame(width: trackWidth, height: trackHeight)
+                                .mask(alignment: .leading) {
+                                    Rectangle()
+                                        .frame(width: max(0, markerPosition))
+                                }
+                        }
+                    } else {
+                        RoundedRectangle(cornerRadius: trackHeight / 2)
+                            .fill(periodColor)
+                            .frame(width: max(0, markerPosition), height: trackHeight)
+                    }
+
+                    // Vertical marker
+                    RoundedRectangle(cornerRadius: markerWidth / 2)
+                        .fill(Color.primary.opacity(0.25))
+                        .frame(width: markerWidth, height: markerHeight)
+                        .offset(x: max(0, min(markerPosition - markerWidth / 2, trackWidth - markerWidth)))
+                }
+                .frame(height: markerHeight)
+            }
+            .frame(maxWidth: .infinity, minHeight: markerHeight)
+        }
     }
 }
 
@@ -449,6 +480,8 @@ enum UsageFixture {
     case critical
     /// Weekly pressure: low session but high weekly usage
     case weeklyPressure
+    /// Overpacing: usage exceeds period progress (shows red overage)
+    case overpacing
     /// Custom values for specific testing
     case custom(
         sessionUsage: Int,
@@ -520,6 +553,18 @@ enum UsageFixture {
                 weeklyPeriodProgress: 86
             )
 
+        case .overpacing:
+            return UsageData(
+                sessionUtilization: 65,
+                sessionResetsAt: Date().addingTimeInterval(3 * 3600),  // 3h left
+                weeklyUtilization: 55,
+                weeklyResetsAt: Date().addingTimeInterval(4 * 24 * 3600), // 4 days left
+                sonnetUtilization: nil,
+                sonnetResetsAt: nil,
+                sessionPeriodProgress: 40,  // Only 40% through period but 65% usage
+                weeklyPeriodProgress: 43    // ~3 days into week but 55% usage
+            )
+
         case .custom(let sessionUsage, let sessionPeriod, let weeklyUsage, let weeklyPeriod, let sonnetUsage):
             return UsageData(
                 sessionUtilization: Double(sessionUsage),
@@ -582,6 +627,10 @@ extension UsageManager {
     UsageView(manager: .preview(.weeklyPressure))
 }
 
+#Preview("Overpacing") {
+    UsageView(manager: .preview(.overpacing))
+}
+
 #Preview("Not Logged In") {
     UsageView(manager: .previewError())
 }
@@ -599,71 +648,85 @@ struct MenuBarGaugePreview: View {
     var showErrorDot: Bool = false
     var loadingDotOpacity: Double? = nil
 
-    private let size: CGFloat = 18
-    private let usageLineWidth: CGFloat = 3
-    private let periodLineWidth: CGFloat = 1
-    private let gap: CGFloat = 1.5
-
-    // Full circle starting from top (-90° in SwiftUI coordinates)
-    private let startAngle: Double = -90
-    private let totalSweep: Double = 360
+    private let height: CGFloat = 18
+    private let barWidth: CGFloat = 16
+    private let horizontalPadding: CGFloat = 1
+    private let usageBarHeight: CGFloat = 3
+    private let periodBarHeight: CGFloat = 2
+    private let gap: CGFloat = 2
+    private let spacing: CGFloat = 3
 
     // Adaptive colors that work in light and dark mode
     private let periodColor = Color.primary.opacity(0.5)
     private let usageColor = Color.primary
 
-    private var usageAngle: Double {
-        startAngle + (Double(usagePercent) / 100.0) * totalSweep
-    }
-
-    private var periodAngle: Double {
-        startAngle + (Double(periodPercent) / 100.0) * totalSweep
-    }
-
-    private var usageRadius: CGFloat {
-        (size - usageLineWidth) / 2 - periodLineWidth - gap
-    }
-
-    private var periodRadius: CGFloat {
-        (size - periodLineWidth) / 2
+    private var effectiveBarWidth: CGFloat {
+        barWidth - (horizontalPadding * 2)
     }
 
     var body: some View {
-        ZStack {
-            // Period background (full circle)
-            Circle()
-                .stroke(periodColor.opacity(0.2), style: StrokeStyle(lineWidth: periodLineWidth))
-                .frame(width: periodRadius * 2, height: periodRadius * 2)
+        HStack(spacing: spacing) {
+            // Bars section
+            ZStack {
+                VStack(spacing: gap) {
+                    // Usage bar (top)
+                    ZStack(alignment: .leading) {
+                        // Background
+                        RoundedRectangle(cornerRadius: usageBarHeight / 2)
+                            .fill(usageColor.opacity(0.5))
+                            .frame(width: effectiveBarWidth, height: usageBarHeight)
 
-            // Period filled
-            Arc(startAngle: .degrees(startAngle), endAngle: .degrees(periodAngle), clockwise: false)
-                .stroke(periodColor, style: StrokeStyle(lineWidth: periodLineWidth, lineCap: .butt))
-                .frame(width: periodRadius * 2, height: periodRadius * 2)
+                        // Filled
+                        if usagePercent > 0 {
+                            RoundedRectangle(cornerRadius: usageBarHeight / 2)
+                                .fill(usageColor.opacity(0.9))
+                                .frame(width: effectiveBarWidth * CGFloat(min(usagePercent, 100)) / 100.0, height: usageBarHeight)
+                        }
+                    }
 
-            // Usage background (full circle)
-            Circle()
-                .stroke(usageColor.opacity(0.2), style: StrokeStyle(lineWidth: usageLineWidth))
-                .frame(width: usageRadius * 2, height: usageRadius * 2)
+                    // Period bar (bottom)
+                    ZStack(alignment: .leading) {
+                        // Background
+                        RoundedRectangle(cornerRadius: periodBarHeight / 2)
+                            .fill(periodColor.opacity(0.5))
+                            .frame(width: effectiveBarWidth, height: periodBarHeight)
 
-            // Usage filled
-            Arc(startAngle: .degrees(startAngle), endAngle: .degrees(usageAngle), clockwise: false)
-                .stroke(usageColor, style: StrokeStyle(lineWidth: usageLineWidth, lineCap: .butt))
-                .frame(width: usageRadius * 2, height: usageRadius * 2)
+                        // Filled
+                        if periodPercent > 0 {
+                            RoundedRectangle(cornerRadius: periodBarHeight / 2)
+                                .fill(periodColor.opacity(0.9))
+                                .frame(width: effectiveBarWidth * CGFloat(min(periodPercent, 100)) / 100.0, height: periodBarHeight)
+                        }
+                    }
+                }
 
-            // Status indicator dot in lower right
+                // Status indicator dot in lower right of bar area
+                if showErrorDot {
+                    Circle()
+                        .fill(Color.red)
+                        .frame(width: 6, height: 6)
+                        .offset(x: barWidth / 2 - 4, y: height / 2 - 7)
+                } else if let opacity = loadingDotOpacity {
+                    Circle()
+                        .fill(Color.green.opacity(opacity))
+                        .frame(width: 6, height: 6)
+                        .offset(x: barWidth / 2 - 4, y: height / 2 - 7)
+                }
+            }
+            .frame(width: barWidth, height: height)
+
+            // Percentage text (or exclamation mark for error state)
             if showErrorDot {
-                Circle()
-                    .fill(Color.red)
-                    .frame(width: 6, height: 6)
-                    .offset(x: size / 2 - 4, y: size / 2 - 4)
-            } else if let opacity = loadingDotOpacity {
-                Circle()
-                    .fill(Color.blue.opacity(opacity))
-                    .frame(width: 6, height: 6)
-                    .offset(x: size / 2 - 4, y: size / 2 - 4)
+                Text("!")
+                    .font(.system(size: 12, weight: .bold, design: .monospaced))
+                    .foregroundColor(.primary)
+            } else {
+                Text("\(usagePercent)%")
+                    .font(.system(size: 10, weight: .medium, design: .monospaced))
+                    .foregroundColor(.primary)
             }
         }
-        .frame(width: size, height: size)
+        .frame(height: height)
     }
 }
 
@@ -721,6 +784,13 @@ struct MenuBarLoadingPreview: View {
                     .background(Color(NSColor.windowBackgroundColor))
                     .cornerRadius(4)
                 Text("Critical").font(.caption).foregroundColor(.secondary)
+            }
+            VStack {
+                MenuBarGaugePreview(usagePercent: 100, periodPercent: 85)
+                    .padding(8)
+                    .background(Color(NSColor.windowBackgroundColor))
+                    .cornerRadius(4)
+                Text("Maxed Out").font(.caption).foregroundColor(.secondary)
             }
         }
 

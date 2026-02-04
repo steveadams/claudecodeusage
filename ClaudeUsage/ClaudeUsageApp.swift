@@ -83,6 +83,21 @@ class AppDelegate: NSObject, NSApplicationDelegate {
                 }
             }
             .store(in: &cancellables)
+
+        // Redraw when menu bar appearance changes (e.g., wallpaper change, dark mode toggle)
+        DistributedNotificationCenter.default().addObserver(
+            self,
+            selector: #selector(handleAppearanceChange),
+            name: NSNotification.Name("AppleInterfaceThemeChangedNotification"),
+            object: nil
+        )
+    }
+
+    @objc func handleAppearanceChange() {
+        // Small delay to let the appearance fully update
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { [weak self] in
+            self?.updateStatusItem()
+        }
     }
 
     func startLoadingAnimation() {
@@ -105,6 +120,8 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func updateLoadingIcon() {
+        // Don't update if timer was stopped (race condition with async Task)
+        guard loadingAnimationTimer != nil else { return }
         guard let button = statusItem?.button else { return }
         // Sine wave creates smooth pulse: 0.3 -> 1.0 -> 0.3 (faster cycle)
         let opacity = CGFloat((sin(loadingAnimationPhase * 6) + 1) / 2 * 0.7 + 0.3)
@@ -187,69 +204,86 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func createGaugeImage(usagePercent: Int, periodPercent: Int, showErrorDot: Bool = false, loadingDotOpacity: CGFloat? = nil) -> NSImage {
-        let size: CGFloat = 18
-        let image = NSImage(size: NSSize(width: size, height: size))
+        let height: CGFloat = 18
+        let barWidth: CGFloat = 16
+        let spacing: CGFloat = 3
 
-        let usageLineWidth: CGFloat = 3
-        let periodLineWidth: CGFloat = 1
-        let gap: CGFloat = 1.5
+        // Measure text width dynamically
+        let displayText = showErrorDot ? "!" : "\(usagePercent)%"
+        let font = showErrorDot
+            ? NSFont.monospacedDigitSystemFont(ofSize: 12, weight: .bold)
+            : NSFont.monospacedDigitSystemFont(ofSize: 10, weight: .medium)
+        let textAttributes: [NSAttributedString.Key: Any] = [.font: font]
+        let textSize = displayText.size(withAttributes: textAttributes)
+        let textWidth = ceil(textSize.width)
 
-        // Full circle starting from top (90° in NSBezierPath coordinates)
-        let startAngle: CGFloat = 90
-        let totalSweep: CGFloat = 360
+        let totalWidth = barWidth + spacing + textWidth + 1  // +1 for right margin
+        let image = NSImage(size: NSSize(width: totalWidth, height: height))
 
-        let center = NSPoint(x: size / 2, y: size / 2)
-        let usageRadius = (size - usageLineWidth) / 2 - periodLineWidth - gap
-        let periodRadius = (size - periodLineWidth) / 2
+        // Horizontal bar layout
+        let horizontalPadding: CGFloat = 1
+        let usageBarHeight: CGFloat = 3
+        let periodBarHeight: CGFloat = 2
+        let gap: CGFloat = 2
 
-        // Use label color which adapts to menu bar appearance (light/dark)
-        let isDarkMenuBar = statusItem?.button?.effectiveAppearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
-        let periodColor = isDarkMenuBar ? NSColor(white: 0.7, alpha: 1) : NSColor(white: 0.4, alpha: 1)
-        let usageFillColor = isDarkMenuBar ? NSColor(white: 0.9, alpha: 1) : NSColor(white: 0.15, alpha: 1)
+        // Vertical centering for bars
+        let totalBarHeight = usageBarHeight + gap + periodBarHeight
+        let topY = (height + totalBarHeight) / 2 - usageBarHeight
+        let bottomY = topY - gap - periodBarHeight
+
+        // Set appearance context for correct color resolution
+        let appearance = statusItem?.button?.effectiveAppearance ?? NSAppearance.current ?? NSAppearance(named: .aqua)!
+        let previousAppearance = NSAppearance.current
+        NSAppearance.current = appearance
+
+        // Use semantic color that adapts to the current appearance
+        let primaryColor = NSColor.labelColor
 
         image.lockFocus()
 
-        // Period arc - background (full circle)
-        let periodBgPath = NSBezierPath()
-        periodBgPath.appendArc(withCenter: center, radius: periodRadius, startAngle: 0, endAngle: 360, clockwise: false)
-        periodBgPath.lineWidth = periodLineWidth
-        periodBgPath.lineCapStyle = .butt
-        periodColor.withAlphaComponent(0.2).setStroke()
-        periodBgPath.stroke()
+        // Usage bar - background
+        let effectiveBarWidth = barWidth - (horizontalPadding * 2)
+        let usageBgRect = NSRect(x: horizontalPadding, y: topY, width: effectiveBarWidth, height: usageBarHeight)
+        let usageBgPath = NSBezierPath(roundedRect: usageBgRect, xRadius: usageBarHeight / 2, yRadius: usageBarHeight / 2)
+        primaryColor.withAlphaComponent(0.5).setFill()
+        usageBgPath.fill()
 
-        // Period arc - filled
-        if periodPercent > 0 {
-            let periodAngle = startAngle - (CGFloat(periodPercent) / 100.0) * totalSweep
-            let periodPath = NSBezierPath()
-            periodPath.appendArc(withCenter: center, radius: periodRadius, startAngle: startAngle, endAngle: periodAngle, clockwise: true)
-            periodPath.lineWidth = periodLineWidth
-            periodPath.lineCapStyle = .butt
-            periodColor.setStroke()
-            periodPath.stroke()
-        }
-
-        // Usage arc - background (full circle)
-        let usageBgPath = NSBezierPath()
-        usageBgPath.appendArc(withCenter: center, radius: usageRadius, startAngle: 0, endAngle: 360, clockwise: false)
-        usageBgPath.lineWidth = usageLineWidth
-        usageBgPath.lineCapStyle = .butt
-        usageFillColor.withAlphaComponent(0.2).setStroke()
-        usageBgPath.stroke()
-
-        // Usage arc - filled
+        // Usage bar - filled
         if usagePercent > 0 {
-            let usageAngle = startAngle - (CGFloat(usagePercent) / 100.0) * totalSweep
-            let usagePath = NSBezierPath()
-            usagePath.appendArc(withCenter: center, radius: usageRadius, startAngle: startAngle, endAngle: usageAngle, clockwise: true)
-            usagePath.lineWidth = usageLineWidth
-            usagePath.lineCapStyle = .butt
-            usageFillColor.setStroke()
-            usagePath.stroke()
+            let usageFillWidth = effectiveBarWidth * CGFloat(min(usagePercent, 100)) / 100.0
+            let usageFillRect = NSRect(x: horizontalPadding, y: topY, width: usageFillWidth, height: usageBarHeight)
+            let usageFillPath = NSBezierPath(roundedRect: usageFillRect, xRadius: usageBarHeight / 2, yRadius: usageBarHeight / 2)
+            primaryColor.withAlphaComponent(0.9).setFill()
+            usageFillPath.fill()
         }
 
-        // Status indicator dot in lower right
+        // Period bar - background (same color as usage, just thinner)
+        let periodBgRect = NSRect(x: horizontalPadding, y: bottomY, width: effectiveBarWidth, height: periodBarHeight)
+        let periodBgPath = NSBezierPath(roundedRect: periodBgRect, xRadius: periodBarHeight / 2, yRadius: periodBarHeight / 2)
+        primaryColor.withAlphaComponent(0.5).setFill()
+        periodBgPath.fill()
+
+        // Period bar - filled
+        if periodPercent > 0 {
+            let periodFillWidth = effectiveBarWidth * CGFloat(min(periodPercent, 100)) / 100.0
+            let periodFillRect = NSRect(x: horizontalPadding, y: bottomY, width: periodFillWidth, height: periodBarHeight)
+            let periodFillPath = NSBezierPath(roundedRect: periodFillRect, xRadius: periodBarHeight / 2, yRadius: periodBarHeight / 2)
+            primaryColor.withAlphaComponent(0.9).setFill()
+            periodFillPath.fill()
+        }
+
+        // Draw percentage text (or exclamation mark for error state)
+        let drawAttributes: [NSAttributedString.Key: Any] = [
+            .font: font,
+            .foregroundColor: primaryColor
+        ]
+        let textX = barWidth + spacing
+        let textY = (height - textSize.height) / 2
+        displayText.draw(at: NSPoint(x: textX, y: textY), withAttributes: drawAttributes)
+
+        // Status indicator dot in lower right (of the bar area)
         let dotSize: CGFloat = 6
-        let dotCenter = NSPoint(x: size - dotSize / 2 - 1, y: dotSize / 2 + 1)
+        let dotCenter = NSPoint(x: barWidth - dotSize / 2, y: dotSize / 2 + 1)
         let dotRect = NSRect(
             x: dotCenter.x - dotSize / 2,
             y: dotCenter.y - dotSize / 2,
@@ -263,11 +297,15 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             dotPath.fill()
         } else if let opacity = loadingDotOpacity {
             let dotPath = NSBezierPath(ovalIn: dotRect)
-            NSColor.systemBlue.withAlphaComponent(opacity).setFill()
+            NSColor.systemGreen.withAlphaComponent(opacity).setFill()
             dotPath.fill()
         }
 
         image.unlockFocus()
+
+        // Restore previous appearance
+        NSAppearance.current = previousAppearance
+
         image.isTemplate = false
         return image
     }
