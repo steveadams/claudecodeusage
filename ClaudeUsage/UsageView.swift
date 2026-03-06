@@ -15,10 +15,8 @@ struct UsageView: View {
     var body: some View {
         VStack(spacing: 0) {
             // Header
-            HStack {
-                Image(systemName: "chart.bar.fill")
-                    .foregroundColor(.accentColor)
-                Text("Claude Usage")
+            HStack(alignment: .firstTextBaseline) {
+                Text("CCUsage")
                     .font(.headline)
                 Text("v\(Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "")")
                     .font(.caption2)
@@ -636,117 +634,124 @@ extension UsageManager {
 }
 
 #Preview("API Error") {
-    UsageView(manager: .previewError("API error (code: 500)"))
+    UsageView(manager: .previewError("Anthropic server error. Try again later."))
+}
+
+#Preview("Rate Limited") {
+    UsageView(manager: .previewError("Rate limited. Try again shortly."))
 }
 
 // MARK: - Menu Bar Icon Preview
 
 /// Mini gauge for menubar preview (SwiftUI version of the NSImage gauge)
 struct MenuBarGaugePreview: View {
-    let usagePercent: Int
-    let periodPercent: Int
-    var showErrorDot: Bool = false
-    var loadingDotOpacity: Double? = nil
+    let sessionUsagePercent: Int
+    let sessionPeriodPercent: Int
+    var weeklyUsagePercent: Int = 0
+    var weeklyPeriodPercent: Int = 0
+    var showError: Bool = false
+    var loadingOpacity: Double? = nil
 
     private let height: CGFloat = 18
-    private let barWidth: CGFloat = 16
-    private let horizontalPadding: CGFloat = 1
-    private let usageBarHeight: CGFloat = 3
-    private let periodBarHeight: CGFloat = 2
-    private let gap: CGFloat = 2
-    private let spacing: CGFloat = 3
-
-    // Adaptive colors that work in light and dark mode
-    private let periodColor = Color.primary.opacity(0.5)
-    private let usageColor = Color.primary
-
-    private var effectiveBarWidth: CGFloat {
-        barWidth - (horizontalPadding * 2)
-    }
+    private let barWidth: CGFloat = 20
+    private let barHeight: CGFloat = 6.5
+    private let rowGap: CGFloat = 4
+    private let labelBarGap: CGFloat = 2
+    private let labelFont = Font.system(size: 8, weight: .medium, design: .monospaced)
 
     var body: some View {
-        HStack(spacing: spacing) {
-            // Bars section
-            ZStack {
-                VStack(spacing: gap) {
-                    // Usage bar (top)
-                    ZStack(alignment: .leading) {
-                        // Background
-                        RoundedRectangle(cornerRadius: usageBarHeight / 2)
-                            .fill(usageColor.opacity(0.5))
-                            .frame(width: effectiveBarWidth, height: usageBarHeight)
-
-                        // Filled
-                        if usagePercent > 0 {
-                            RoundedRectangle(cornerRadius: usageBarHeight / 2)
-                                .fill(usageColor.opacity(0.9))
-                                .frame(width: effectiveBarWidth * CGFloat(min(usagePercent, 100)) / 100.0, height: usageBarHeight)
-                        }
-                    }
-
-                    // Period bar (bottom)
-                    ZStack(alignment: .leading) {
-                        // Background
-                        RoundedRectangle(cornerRadius: periodBarHeight / 2)
-                            .fill(periodColor.opacity(0.5))
-                            .frame(width: effectiveBarWidth, height: periodBarHeight)
-
-                        // Filled
-                        if periodPercent > 0 {
-                            RoundedRectangle(cornerRadius: periodBarHeight / 2)
-                                .fill(periodColor.opacity(0.9))
-                                .frame(width: effectiveBarWidth * CGFloat(min(periodPercent, 100)) / 100.0, height: periodBarHeight)
-                        }
-                    }
-                }
-
-                // Status indicator dot in lower right of bar area
-                if showErrorDot {
-                    Circle()
-                        .fill(Color.red)
-                        .frame(width: 6, height: 6)
-                        .offset(x: barWidth / 2 - 4, y: height / 2 - 7)
-                } else if let opacity = loadingDotOpacity {
-                    Circle()
-                        .fill(Color.green.opacity(opacity))
-                        .frame(width: 6, height: 6)
-                        .offset(x: barWidth / 2 - 4, y: height / 2 - 7)
-                }
-            }
-            .frame(width: barWidth, height: height)
-
-            // Percentage text (or exclamation mark for error state)
-            if showErrorDot {
-                Text("!")
-                    .font(.system(size: 12, weight: .bold, design: .monospaced))
-                    .foregroundColor(.primary)
-            } else {
-                Text("\(usagePercent)%")
-                    .font(.system(size: 10, weight: .medium, design: .monospaced))
-                    .foregroundColor(.primary)
+        HStack(spacing: 0) {
+            VStack(spacing: rowGap) {
+                gaugeRow(label: "5H", usagePercent: sessionUsagePercent, periodPercent: sessionPeriodPercent)
+                gaugeRow(label: "7D", usagePercent: weeklyUsagePercent, periodPercent: weeklyPeriodPercent)
             }
         }
+        .opacity(loadingOpacity ?? 1.0)
         .frame(height: height)
+    }
+
+    @ViewBuilder
+    private func gaugeRow(label: String, usagePercent: Int, periodPercent: Int) -> some View {
+        let isOverage = usagePercent > periodPercent
+
+        HStack(spacing: labelBarGap) {
+            Text(label)
+                .font(labelFont)
+                .foregroundColor(showError ? .red : (isOverage ? .orange : .primary))
+
+            ZStack(alignment: .leading) {
+                if showError {
+                    // Error state: red bars
+                    RoundedRectangle(cornerRadius: 1)
+                        .fill(Color.red.opacity(0.3))
+                        .frame(width: barWidth, height: barHeight)
+                    RoundedRectangle(cornerRadius: 1)
+                        .fill(Color.red.opacity(0.6))
+                        .frame(width: barWidth, height: barHeight)
+                } else {
+                    // 1. Background (faint)
+                    RoundedRectangle(cornerRadius: 1)
+                        .fill(Color.primary.opacity(0.15))
+                        .frame(width: barWidth, height: barHeight)
+
+                    // 2. Period progress
+                    if periodPercent > 0 {
+                        RoundedRectangle(cornerRadius: 1)
+                            .fill(Color.primary.opacity(0.4))
+                            .frame(width: barWidth * CGFloat(min(periodPercent, 100)) / 100.0, height: barHeight)
+                    }
+
+                    // 3. Usage fill (clamped to period)
+                    if usagePercent > 0 {
+                        let clamped = min(usagePercent, periodPercent)
+                        if clamped > 0 {
+                            RoundedRectangle(cornerRadius: 1)
+                                .fill(Color.primary.opacity(0.85))
+                                .frame(width: barWidth * CGFloat(min(clamped, 100)) / 100.0, height: barHeight)
+                        }
+                    }
+
+                    // 4. Overage in orange
+                    if isOverage {
+                        let periodWidth = barWidth * CGFloat(min(periodPercent, 100)) / 100.0
+                        let usageWidth = barWidth * CGFloat(min(usagePercent, 100)) / 100.0
+                        let overageWidth = usageWidth - periodWidth
+                        if overageWidth > 0 {
+                            RoundedRectangle(cornerRadius: 1)
+                                .fill(Color.orange)
+                                .frame(width: overageWidth, height: barHeight)
+                                .offset(x: periodWidth)
+                        }
+                    }
+                }
+            }
+        }
     }
 }
 
 /// Animated loading gauge for preview
 struct MenuBarLoadingPreview: View {
     @State private var phase: Double = 0
-    var usagePercent: Int = 45
-    var periodPercent: Int = 50
+    var sessionUsagePercent: Int = 45
+    var sessionPeriodPercent: Int = 50
+    var weeklyUsagePercent: Int = 35
+    var weeklyPeriodPercent: Int = 43
 
     private var opacity: Double {
         (sin(phase * 6) + 1) / 2 * 0.7 + 0.3
     }
 
     var body: some View {
-        MenuBarGaugePreview(usagePercent: usagePercent, periodPercent: periodPercent, loadingDotOpacity: opacity)
-            .onAppear {
-                Timer.scheduledTimer(withTimeInterval: 0.03, repeats: true) { _ in
-                    phase += 0.03
-                }
+        MenuBarGaugePreview(
+            sessionUsagePercent: sessionUsagePercent, sessionPeriodPercent: sessionPeriodPercent,
+            weeklyUsagePercent: weeklyUsagePercent, weeklyPeriodPercent: weeklyPeriodPercent,
+            loadingOpacity: opacity
+        )
+        .onAppear {
+            Timer.scheduledTimer(withTimeInterval: 0.03, repeats: true) { _ in
+                phase += 0.03
             }
+        }
     }
 }
 
@@ -758,39 +763,39 @@ struct MenuBarLoadingPreview: View {
 
         HStack(spacing: 24) {
             VStack {
-                MenuBarGaugePreview(usagePercent: 15, periodPercent: 20)
+                MenuBarGaugePreview(sessionUsagePercent: 15, sessionPeriodPercent: 20, weeklyUsagePercent: 12, weeklyPeriodPercent: 14)
                     .padding(8)
                     .background(Color(NSColor.windowBackgroundColor))
                     .cornerRadius(4)
                 Text("Low").font(.caption).foregroundColor(.secondary)
             }
             VStack {
-                MenuBarGaugePreview(usagePercent: 45, periodPercent: 50)
+                MenuBarGaugePreview(sessionUsagePercent: 45, sessionPeriodPercent: 50, weeklyUsagePercent: 35, weeklyPeriodPercent: 43)
                     .padding(8)
                     .background(Color(NSColor.windowBackgroundColor))
                     .cornerRadius(4)
                 Text("Normal").font(.caption).foregroundColor(.secondary)
             }
             VStack {
-                MenuBarGaugePreview(usagePercent: 75, periodPercent: 60)
+                MenuBarGaugePreview(sessionUsagePercent: 75, sessionPeriodPercent: 60, weeklyUsagePercent: 65, weeklyPeriodPercent: 64)
                     .padding(8)
                     .background(Color(NSColor.windowBackgroundColor))
                     .cornerRadius(4)
                 Text("Warning").font(.caption).foregroundColor(.secondary)
             }
             VStack {
-                MenuBarGaugePreview(usagePercent: 92, periodPercent: 85)
+                MenuBarGaugePreview(sessionUsagePercent: 92, sessionPeriodPercent: 85, weeklyUsagePercent: 88, weeklyPeriodPercent: 93)
                     .padding(8)
                     .background(Color(NSColor.windowBackgroundColor))
                     .cornerRadius(4)
                 Text("Critical").font(.caption).foregroundColor(.secondary)
             }
             VStack {
-                MenuBarGaugePreview(usagePercent: 100, periodPercent: 85)
+                MenuBarGaugePreview(sessionUsagePercent: 65, sessionPeriodPercent: 40, weeklyUsagePercent: 55, weeklyPeriodPercent: 43)
                     .padding(8)
                     .background(Color(NSColor.windowBackgroundColor))
                     .cornerRadius(4)
-                Text("Maxed Out").font(.caption).foregroundColor(.secondary)
+                Text("Overpacing").font(.caption).foregroundColor(.secondary)
             }
         }
 
@@ -805,7 +810,7 @@ struct MenuBarLoadingPreview: View {
                 Text("Loading").font(.caption).foregroundColor(.secondary)
             }
             VStack {
-                MenuBarGaugePreview(usagePercent: 0, periodPercent: 0, showErrorDot: true)
+                MenuBarGaugePreview(sessionUsagePercent: 0, sessionPeriodPercent: 0, weeklyUsagePercent: 0, weeklyPeriodPercent: 0, showError: true)
                     .padding(8)
                     .background(Color(NSColor.windowBackgroundColor))
                     .cornerRadius(4)
