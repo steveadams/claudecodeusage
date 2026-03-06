@@ -11,6 +11,9 @@ struct UsageData {
     let weeklyResetsAt: Date?
     let sonnetUtilization: Double?
     let sonnetResetsAt: Date?
+    let extraUsageEnabled: Bool
+    let extraUsageMonthlyLimit: Double?
+    let extraUsageUsedCredits: Double?
 
     // Optional overrides for preview/testing (when set, bypass computed logic)
     private let _sessionPeriodProgress: Int?
@@ -19,6 +22,10 @@ struct UsageData {
     var sessionPercentage: Int { Int(sessionUtilization) }
     var weeklyPercentage: Int { Int(weeklyUtilization) }
     var sonnetPercentage: Int? { sonnetUtilization.map { Int($0) } }
+    var extraUsagePercentage: Int? {
+        guard extraUsageEnabled, let limit = extraUsageMonthlyLimit, let used = extraUsageUsedCredits, limit > 0 else { return nil }
+        return Int((used / limit) * 100)
+    }
 
     /// How far through the 5-hour session period (0-100%)
     var sessionPeriodProgress: Int? {
@@ -51,6 +58,9 @@ struct UsageData {
         weeklyResetsAt: Date?,
         sonnetUtilization: Double? = nil,
         sonnetResetsAt: Date? = nil,
+        extraUsageEnabled: Bool = false,
+        extraUsageMonthlyLimit: Double? = nil,
+        extraUsageUsedCredits: Double? = nil,
         sessionPeriodProgress: Int? = nil,
         weeklyPeriodProgress: Int? = nil
     ) {
@@ -60,6 +70,9 @@ struct UsageData {
         self.weeklyResetsAt = weeklyResetsAt
         self.sonnetUtilization = sonnetUtilization
         self.sonnetResetsAt = sonnetResetsAt
+        self.extraUsageEnabled = extraUsageEnabled
+        self.extraUsageMonthlyLimit = extraUsageMonthlyLimit
+        self.extraUsageUsedCredits = extraUsageUsedCredits
         self._sessionPeriodProgress = sessionPeriodProgress
         self._weeklyPeriodProgress = weeklyPeriodProgress
     }
@@ -86,6 +99,25 @@ class UsageManager: ObservableObject {
     @Published var lastUpdated: Date?
 
     static let currentVersion = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "1.0.0"
+
+    static let claudeCodeVersion: String = {
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/usr/bin/env")
+        process.arguments = ["claude", "--version"]
+        let pipe = Pipe()
+        process.standardOutput = pipe
+        process.standardError = Pipe()
+        do {
+            try process.run()
+            process.waitUntilExit()
+            if let output = String(data: pipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8)?
+                .trimmingCharacters(in: .whitespacesAndNewlines) {
+                let version = output.split(separator: " ").first.map(String.init) ?? output
+                if !version.isEmpty { return version }
+            }
+        } catch {}
+        return "2.1.0"
+    }()
 
     private static let oauthClientId = "9d1c250a-e61b-44d9-88ed-5944d1962f5e"
     private static let tokenEndpoints = [
@@ -275,7 +307,7 @@ class UsageManager: ObservableObject {
                 var request = URLRequest(url: URL(string: endpoint)!)
                 request.httpMethod = "POST"
                 request.setValue("application/x-www-form-urlencoded", forHTTPHeaderField: "Content-Type")
-                request.setValue("ClaudeUsage/\(Self.currentVersion)", forHTTPHeaderField: "User-Agent")
+                request.setValue("claude-code/\(Self.claudeCodeVersion)", forHTTPHeaderField: "User-Agent")
                 request.httpBody = body.data(using: .utf8)
 
                 let (data, response) = try await urlSession.data(for: request)
@@ -428,7 +460,7 @@ class UsageManager: ObservableObject {
         request.httpMethod = "GET"
         request.setValue("application/json", forHTTPHeaderField: "Accept")
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        request.setValue("ClaudeUsage/\(Self.currentVersion)", forHTTPHeaderField: "User-Agent")
+        request.setValue("claude-code/\(Self.claudeCodeVersion)", forHTTPHeaderField: "User-Agent")
         request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
         request.setValue("oauth-2025-04-20", forHTTPHeaderField: "anthropic-beta")
 
@@ -470,7 +502,8 @@ class UsageManager: ObservableObject {
 
         let fiveHour = json["five_hour"] as? [String: Any]
         let sevenDay = json["seven_day"] as? [String: Any]
-        let sonnetOnly = json["sonnet_only"] as? [String: Any]
+        // Try new field name first, fall back to legacy
+        let sonnetOnly = json["seven_day_sonnet"] as? [String: Any] ?? json["sonnet_only"] as? [String: Any]
 
         // Log API response for debugging
         logger.info("API response keys: \(json.keys.joined(separator: ", "))")
@@ -485,13 +518,18 @@ class UsageManager: ObservableObject {
             logger.warning("seven_day is nil in API response")
         }
 
+        let extraUsage = json["extra_usage"] as? [String: Any]
+
         return UsageData(
             sessionUtilization: fiveHour?["utilization"] as? Double ?? 0,
             sessionResetsAt: parseDate(fiveHour?["resets_at"] as? String),
             weeklyUtilization: sevenDay?["utilization"] as? Double ?? 0,
             weeklyResetsAt: parseDate(sevenDay?["resets_at"] as? String),
             sonnetUtilization: sonnetOnly?["utilization"] as? Double,
-            sonnetResetsAt: parseDate(sonnetOnly?["resets_at"] as? String)
+            sonnetResetsAt: parseDate(sonnetOnly?["resets_at"] as? String),
+            extraUsageEnabled: extraUsage?["is_enabled"] as? Bool ?? false,
+            extraUsageMonthlyLimit: extraUsage?["monthly_limit"] as? Double,
+            extraUsageUsedCredits: extraUsage?["used_credits"] as? Double
         )
     }
 
