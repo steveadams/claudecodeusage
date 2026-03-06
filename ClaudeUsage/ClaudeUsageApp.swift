@@ -160,8 +160,8 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             await usageManager.refresh()
         }
 
-        // Refresh every 2 minutes
-        timer = Timer.scheduledTimer(withTimeInterval: 120, repeats: true) { [weak self] _ in
+        // Refresh every 5 minutes
+        timer = Timer.scheduledTimer(withTimeInterval: 300, repeats: true) { [weak self] _ in
             Task { @MainActor in
                 await self?.usageManager.refresh()
             }
