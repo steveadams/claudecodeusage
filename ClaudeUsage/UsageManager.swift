@@ -65,6 +65,19 @@ struct UsageData {
     }
 }
 
+struct OAuthCredentials {
+    let accessToken: String
+    let refreshToken: String?
+    let expiresAt: Date?
+    /// Which keychain service name this was read from
+    let keychainService: String
+
+    var isExpiredOrExpiringSoon: Bool {
+        guard let expiresAt = expiresAt else { return false }
+        return Date().addingTimeInterval(60) >= expiresAt
+    }
+}
+
 @MainActor
 class UsageManager: ObservableObject {
     @Published var usage: UsageData?
@@ -74,6 +87,12 @@ class UsageManager: ObservableObject {
 
     static let currentVersion = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "1.0.0"
 
+    private static let oauthClientId = "9d1c250a-e61b-44d9-88ed-5944d1962f5e"
+    private static let tokenEndpoints = [
+        "https://console.anthropic.com/v1/oauth/token",
+        "https://api.anthropic.com/v1/oauth/token",
+    ]
+
     // Configured URLSession with timeouts
     private lazy var urlSession: URLSession = {
         let config = URLSessionConfiguration.default
@@ -81,14 +100,6 @@ class UsageManager: ObservableObject {
         config.timeoutIntervalForResource = 30
         return URLSession(configuration: config)
     }()
-
-    var statusEmoji: String {
-        guard let usage = usage else { return "❓" }
-        let maxUtil = max(usage.sessionUtilization, usage.weeklyUtilization)
-        if maxUtil >= 90 { return "🔴" }
-        if maxUtil >= 70 { return "🟡" }
-        return "🟢"
-    }
 
     func refresh() async {
         await refreshWithRetry(retriesRemaining: 3)
@@ -108,11 +119,43 @@ class UsageManager: ObservableObject {
         } catch let keychainError as KeychainError {
             // Retry on keychain errors that may resolve after unlock
             if retriesRemaining > 0 && keychainError.isRetryable {
-                try? await Task.sleep(nanoseconds: 2_000_000_000) // 2 seconds
+                try? await Task.sleep(nanoseconds: 3_000_000_000) // 3 seconds
                 await refreshWithRetry(retriesRemaining: retriesRemaining - 1)
                 return
             }
             self.error = keychainError.localizedDescription
+        } catch let usageError as UsageError {
+            // For 429 with retry-after=0: likely expired token — attempt refresh
+            if case .apiError(429, _, _, let retryAfter) = usageError {
+                if retryAfter == 0, retriesRemaining > 0 {
+                    logger.info("429 with retry-after=0, attempting token refresh")
+                    do {
+                        let creds = try readOAuthCredentials()
+                        if let refreshToken = creds.refreshToken {
+                            let _ = try await refreshAccessToken(using: refreshToken, keychainService: creds.keychainService)
+                            await refreshWithRetry(retriesRemaining: 0)
+                            return
+                        }
+                    } catch {
+                        logger.error("Token refresh failed after 429: \(error.localizedDescription)")
+                    }
+                    self.error = "Authentication expired. Run 'claude' to re-authenticate."
+                    return
+                }
+                self.error = usageError.localizedDescription
+                if let wait = retryAfter, wait > 0, retriesRemaining > 0 {
+                    let waitNanos = UInt64(max(wait, 60) * 1_000_000_000)
+                    try? await Task.sleep(nanoseconds: waitNanos)
+                    await refreshWithRetry(retriesRemaining: 0)
+                }
+                return
+            }
+            if retriesRemaining > 0 && usageError.isRetryable {
+                try? await Task.sleep(nanoseconds: 3_000_000_000) // 3 seconds
+                await refreshWithRetry(retriesRemaining: retriesRemaining - 1)
+                return
+            }
+            self.error = usageError.localizedDescription
         } catch let urlError as URLError {
             // Retry on network errors (common after wake from sleep)
             if retriesRemaining > 0 && urlError.isRetryable {
@@ -127,16 +170,39 @@ class UsageManager: ObservableObject {
     }
 
     private func getAccessToken() async throws -> String {
-        // Get token from Claude Code's keychain via security CLI
-        return try getClaudeCodeToken()
+        let creds = try readOAuthCredentials()
+
+        // Proactively refresh if token is expired or expiring within 60s
+        if creds.isExpiredOrExpiringSoon, let refreshToken = creds.refreshToken {
+            logger.info("Token expired or expiring soon, refreshing proactively")
+            do {
+                let newCreds = try await refreshAccessToken(using: refreshToken, keychainService: creds.keychainService)
+                return newCreds.accessToken
+            } catch {
+                logger.warning("Proactive refresh failed: \(error.localizedDescription), trying existing token")
+                // Fall through to use existing token — it might still work
+            }
+        }
+
+        return creds.accessToken
     }
 
-    /// Get token from Claude Code's keychain using security CLI (avoids ACL prompt!)
-    private func getClaudeCodeToken() throws -> String {
-        // Use security CLI which is already in the keychain ACL
+    /// Read full OAuth credentials from keychain, trying both service names
+    private func readOAuthCredentials() throws -> OAuthCredentials {
+        if let creds = try? readOAuthCredentialsFromKeychain(service: "Claude Code-credentials") {
+            return creds
+        }
+        if let creds = try? readOAuthCredentialsFromKeychain(service: "Claude Code") {
+            return creds
+        }
+        throw KeychainError.notLoggedIn
+    }
+
+    /// Read OAuth credentials from a specific keychain service
+    private func readOAuthCredentialsFromKeychain(service: String) throws -> OAuthCredentials {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/usr/bin/security")
-        process.arguments = ["find-generic-password", "-s", "Claude Code-credentials", "-w"]
+        process.arguments = ["find-generic-password", "-s", service, "-w"]
 
         let pipe = Pipe()
         let errorPipe = Pipe()
@@ -155,11 +221,6 @@ class UsageManager: ObservableObject {
         let errorString = String(data: errorData, encoding: .utf8) ?? ""
 
         guard process.terminationStatus == 0 else {
-            // Try alternate keychain entry as fallback
-            if let token = try? getAccessTokenFromAlternateKeychain() {
-                return token
-            }
-            // Include error detail for debugging
             if errorString.contains("could not be found") {
                 throw KeychainError.notLoggedIn
             }
@@ -168,64 +229,198 @@ class UsageManager: ObservableObject {
 
         guard let jsonString = String(data: data, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines),
               !jsonString.isEmpty else {
-            if let token = try? getAccessTokenFromAlternateKeychain() {
-                return token
-            }
             throw KeychainError.notLoggedIn
         }
 
-        // Try to parse as OAuth credentials
-        if let jsonData = jsonString.data(using: .utf8),
-           let json = try? JSONSerialization.jsonObject(with: jsonData) as? [String: Any] {
-            // Check for claudeAiOauth structure
-            if let oauth = json["claudeAiOauth"] as? [String: Any],
-               let accessToken = oauth["accessToken"] as? String {
-                return accessToken
-            }
-            // Show what keys ARE present for debugging
-            let keys = Array(json.keys).joined(separator: ", ")
-            throw KeychainError.missingOAuthToken(availableKeys: keys)
-        }
-
-        // Primary entry doesn't have OAuth - try alternate keychain
-        if let token = try? getAccessTokenFromAlternateKeychain() {
-            return token
-        }
-
-        throw KeychainError.invalidCredentialFormat
-    }
-
-    /// Fallback: Check for "Claude Code" keychain entry (alternate storage location)
-    private func getAccessTokenFromAlternateKeychain() throws -> String {
-        // Use security CLI which is already in the keychain ACL
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: "/usr/bin/security")
-        process.arguments = ["find-generic-password", "-s", "Claude Code", "-w"]
-
-        let pipe = Pipe()
-        process.standardOutput = pipe
-        process.standardError = pipe
-
-        do {
-            try process.run()
-            process.waitUntilExit()
-        } catch {
-            throw KeychainError.notLoggedIn
-        }
-
-        let data = pipe.fileHandleForReading.readDataToEndOfFile()
-
-        guard process.terminationStatus == 0,
-              let jsonString = String(data: data, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines),
-              !jsonString.isEmpty,
-              let jsonData = jsonString.data(using: .utf8),
+        guard let jsonData = jsonString.data(using: .utf8),
               let json = try? JSONSerialization.jsonObject(with: jsonData) as? [String: Any],
               let oauth = json["claudeAiOauth"] as? [String: Any],
               let accessToken = oauth["accessToken"] as? String else {
-            throw KeychainError.notLoggedIn
+            if let jsonData = jsonString.data(using: .utf8),
+               let json = try? JSONSerialization.jsonObject(with: jsonData) as? [String: Any] {
+                let keys = Array(json.keys).joined(separator: ", ")
+                throw KeychainError.missingOAuthToken(availableKeys: keys)
+            }
+            throw KeychainError.invalidCredentialFormat
         }
 
-        return accessToken
+        let refreshToken = oauth["refreshToken"] as? String
+        var expiresAt: Date? = nil
+        if let expiresAtString = oauth["expiresAt"] as? String {
+            let formatter = ISO8601DateFormatter()
+            formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+            expiresAt = formatter.date(from: expiresAtString)
+            if expiresAt == nil {
+                formatter.formatOptions = [.withInternetDateTime]
+                expiresAt = formatter.date(from: expiresAtString)
+            }
+        }
+
+        return OAuthCredentials(
+            accessToken: accessToken,
+            refreshToken: refreshToken,
+            expiresAt: expiresAt,
+            keychainService: service
+        )
+    }
+
+    /// Refresh the OAuth access token using the refresh token
+    private func refreshAccessToken(using refreshToken: String, keychainService: String) async throws -> OAuthCredentials {
+        let body = "grant_type=refresh_token&refresh_token=\(refreshToken.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? refreshToken)&client_id=\(Self.oauthClientId)"
+
+        var lastError: Error = TokenRefreshError.refreshFailed("No endpoints available")
+
+        for endpoint in Self.tokenEndpoints {
+            do {
+                var request = URLRequest(url: URL(string: endpoint)!)
+                request.httpMethod = "POST"
+                request.setValue("application/x-www-form-urlencoded", forHTTPHeaderField: "Content-Type")
+                request.setValue("ClaudeUsage/\(Self.currentVersion)", forHTTPHeaderField: "User-Agent")
+                request.httpBody = body.data(using: .utf8)
+
+                let (data, response) = try await urlSession.data(for: request)
+
+                guard let httpResponse = response as? HTTPURLResponse else {
+                    lastError = TokenRefreshError.refreshFailed("Invalid response")
+                    continue
+                }
+
+                if httpResponse.statusCode == 400 {
+                    // Refresh token itself is invalid/expired
+                    // Claude Code CLI may have refreshed first — re-read keychain and retry
+                    logger.info("Refresh token rejected (400), re-reading keychain in case CLI refreshed")
+                    if let freshCreds = try? readOAuthCredentialsFromKeychain(service: keychainService),
+                       freshCreds.accessToken != refreshToken,
+                       !freshCreds.isExpiredOrExpiringSoon {
+                        // CLI refreshed the token for us
+                        return freshCreds
+                    }
+                    throw TokenRefreshError.refreshTokenExpired
+                }
+
+                guard httpResponse.statusCode == 200 else {
+                    let bodyStr = String(data: data, encoding: .utf8) ?? "no body"
+                    lastError = TokenRefreshError.refreshFailed("HTTP \(httpResponse.statusCode): \(bodyStr)")
+                    continue
+                }
+
+                guard let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                      let newAccessToken = json["access_token"] as? String else {
+                    lastError = TokenRefreshError.refreshFailed("Invalid token response")
+                    continue
+                }
+
+                let newRefreshToken = json["refresh_token"] as? String ?? refreshToken
+                let expiresIn = json["expires_in"] as? Double
+                let newExpiresAt = expiresIn.map { Date().addingTimeInterval($0) }
+
+                logger.info("Token refreshed successfully via \(endpoint)")
+
+                // Write updated credentials back to keychain
+                try updateKeychainCredentials(
+                    service: keychainService,
+                    accessToken: newAccessToken,
+                    refreshToken: newRefreshToken,
+                    expiresAt: newExpiresAt
+                )
+
+                return OAuthCredentials(
+                    accessToken: newAccessToken,
+                    refreshToken: newRefreshToken,
+                    expiresAt: newExpiresAt,
+                    keychainService: keychainService
+                )
+            } catch let error as TokenRefreshError {
+                throw error // Don't retry on definitive failures
+            } catch {
+                lastError = error
+                logger.warning("Token refresh failed via \(endpoint): \(error.localizedDescription), trying next endpoint")
+                continue
+            }
+        }
+
+        throw lastError
+    }
+
+    /// Update the keychain entry with refreshed OAuth credentials
+    private func updateKeychainCredentials(service: String, accessToken: String, refreshToken: String, expiresAt: Date?) throws {
+        // Read existing full JSON to preserve other fields
+        let readProcess = Process()
+        readProcess.executableURL = URL(fileURLWithPath: "/usr/bin/security")
+        readProcess.arguments = ["find-generic-password", "-s", service, "-w"]
+
+        let readPipe = Pipe()
+        readProcess.standardOutput = readPipe
+        readProcess.standardError = Pipe()
+
+        try readProcess.run()
+        readProcess.waitUntilExit()
+
+        let readData = readPipe.fileHandleForReading.readDataToEndOfFile()
+        guard let jsonString = String(data: readData, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines),
+              let jsonData = jsonString.data(using: .utf8),
+              var json = try? JSONSerialization.jsonObject(with: jsonData) as? [String: Any],
+              var oauth = json["claudeAiOauth"] as? [String: Any] else {
+            throw TokenRefreshError.keychainWriteFailed
+        }
+
+        // Update OAuth fields
+        oauth["accessToken"] = accessToken
+        oauth["refreshToken"] = refreshToken
+        if let expiresAt = expiresAt {
+            let formatter = ISO8601DateFormatter()
+            formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+            oauth["expiresAt"] = formatter.string(from: expiresAt)
+        }
+        json["claudeAiOauth"] = oauth
+
+        guard let updatedData = try? JSONSerialization.data(withJSONObject: json),
+              let updatedString = String(data: updatedData, encoding: .utf8) else {
+            throw TokenRefreshError.keychainWriteFailed
+        }
+
+        // Determine the account name for this keychain entry
+        let accountProcess = Process()
+        accountProcess.executableURL = URL(fileURLWithPath: "/usr/bin/security")
+        accountProcess.arguments = ["find-generic-password", "-s", service]
+
+        let accountPipe = Pipe()
+        accountProcess.standardOutput = accountPipe
+        accountProcess.standardError = Pipe()
+
+        try accountProcess.run()
+        accountProcess.waitUntilExit()
+
+        let accountOutput = String(data: accountPipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
+        // Parse account name from "acct"<blob>="accountName"
+        var accountName = ""
+        if let range = accountOutput.range(of: "\"acct\"<blob>=\"") {
+            let start = range.upperBound
+            if let end = accountOutput[start...].firstIndex(of: "\"") {
+                accountName = String(accountOutput[start..<end])
+            }
+        }
+
+        // Write back using security add-generic-password -U
+        let writeProcess = Process()
+        writeProcess.executableURL = URL(fileURLWithPath: "/usr/bin/security")
+        var writeArgs = ["add-generic-password", "-U", "-s", service, "-w", updatedString]
+        if !accountName.isEmpty {
+            writeArgs += ["-a", accountName]
+        }
+        writeProcess.arguments = writeArgs
+        writeProcess.standardOutput = Pipe()
+        writeProcess.standardError = Pipe()
+
+        try writeProcess.run()
+        writeProcess.waitUntilExit()
+
+        guard writeProcess.terminationStatus == 0 else {
+            logger.error("Failed to write updated credentials to keychain (exit \(writeProcess.terminationStatus))")
+            throw TokenRefreshError.keychainWriteFailed
+        }
+
+        logger.info("Updated keychain credentials for service '\(service)'")
     }
 
     private func fetchUsage(token: String) async throws -> UsageData {
@@ -243,8 +438,30 @@ class UsageManager: ObservableObject {
             throw UsageError.invalidResponse
         }
 
+        // Log all rate limit headers for diagnostics
+        let rateLimitHeaders = httpResponse.allHeaderFields.filter { key, _ in
+            (key as? String)?.lowercased().contains("ratelimit") == true ||
+            (key as? String)?.lowercased() == "retry-after"
+        }
+        if !rateLimitHeaders.isEmpty {
+            let headerStr = rateLimitHeaders.map { "\($0.key): \($0.value)" }.joined(separator: ", ")
+            logger.info("Rate limit headers: \(headerStr)")
+        }
+
         guard httpResponse.statusCode == 200 else {
-            throw UsageError.apiError(statusCode: httpResponse.statusCode)
+            // Parse error body for details
+            let bodyString = String(data: data, encoding: .utf8)
+            var errorType: String?
+            var errorMessage: String?
+            if let bodyData = bodyString?.data(using: .utf8),
+               let json = try? JSONSerialization.jsonObject(with: bodyData) as? [String: Any],
+               let errorObj = json["error"] as? [String: Any] {
+                errorType = errorObj["type"] as? String
+                errorMessage = errorObj["message"] as? String
+            }
+            let retryAfter = httpResponse.value(forHTTPHeaderField: "retry-after").flatMap { Double($0) }
+            logger.error("API error \(httpResponse.statusCode): type=\(errorType ?? "unknown") message=\(errorMessage ?? bodyString ?? "no body") retry-after=\(retryAfter.map { "\($0)" } ?? "nil")")
+            throw UsageError.apiError(statusCode: httpResponse.statusCode, errorType: errorType, errorMessage: errorMessage, retryAfter: retryAfter)
         }
 
         guard let json = try JSONSerialization.jsonObject(with: data) as? [String: Any] else {
@@ -348,17 +565,63 @@ enum KeychainError: LocalizedError {
 
 enum UsageError: LocalizedError {
     case invalidResponse
-    case apiError(statusCode: Int)
+    case apiError(statusCode: Int, errorType: String?, errorMessage: String?, retryAfter: TimeInterval?)
 
     var errorDescription: String? {
         switch self {
         case .invalidResponse:
             return "Invalid response from API"
-        case .apiError(let code):
-            if code == 401 {
+        case .apiError(let code, _, let errorMessage, let retryAfter):
+            switch code {
+            case 401:
                 return "Authentication expired. Run 'claude' to re-authenticate."
+            case 403:
+                return errorMessage ?? "Permission denied."
+            case 429:
+                // retry-after: 0 typically means invalid token, not a real rate limit
+                if retryAfter == 0 {
+                    return "Authentication may have expired. Run 'claude' to re-authenticate."
+                }
+                if let seconds = retryAfter {
+                    let minutes = Int(ceil(seconds / 60))
+                    return "Rate limited. Retrying in \(minutes)m."
+                }
+                return "Rate limited. Retrying in 1m."
+            case 500:
+                return "Anthropic server error. Try again later."
+            case 529:
+                return "API is temporarily overloaded. Try again later."
+            default:
+                return errorMessage ?? "API error (\(code))."
             }
-            return "API error (code: \(code))"
+        }
+    }
+
+    /// Whether this error may resolve on retry
+    var isRetryable: Bool {
+        switch self {
+        case .invalidResponse:
+            return false
+        case .apiError(let code, _, _, _):
+            // 429 is handled separately with retry-after delay
+            return code == 500 || code == 529
+        }
+    }
+}
+
+enum TokenRefreshError: LocalizedError {
+    case refreshFailed(String)
+    case refreshTokenExpired
+    case keychainWriteFailed
+
+    var errorDescription: String? {
+        switch self {
+        case .refreshFailed(let detail):
+            return "Token refresh failed: \(detail)"
+        case .refreshTokenExpired:
+            return "Session expired. Run 'claude' to re-authenticate."
+        case .keychainWriteFailed:
+            return "Failed to save refreshed token to keychain."
         }
     }
 }

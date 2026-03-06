@@ -126,9 +126,15 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         // Sine wave creates smooth pulse: 0.3 -> 1.0 -> 0.3 (faster cycle)
         let opacity = CGFloat((sin(loadingAnimationPhase * 6) + 1) / 2 * 0.7 + 0.3)
         // Preserve current usage values during loading
-        let usagePercent = usageManager.usage?.sessionPercentage ?? 0
-        let periodPercent = usageManager.usage?.sessionPeriodProgress ?? 0
-        button.image = createGaugeImage(usagePercent: usagePercent, periodPercent: periodPercent, loadingDotOpacity: opacity)
+        let sessionUsage = usageManager.usage?.sessionPercentage ?? 0
+        let sessionPeriod = usageManager.usage?.sessionPeriodProgress ?? 0
+        let weeklyUsage = usageManager.usage?.weeklyPercentage ?? 0
+        let weeklyPeriod = usageManager.usage?.weeklyPeriodProgress ?? 0
+        button.image = createGaugeImage(
+            sessionUsagePercent: sessionUsage, sessionPeriodPercent: sessionPeriod,
+            weeklyUsagePercent: weeklyUsage, weeklyPeriodPercent: weeklyPeriod,
+            loadingOpacity: opacity
+        )
         button.title = ""
     }
 
@@ -166,7 +172,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
 
         if let button = statusItem?.button {
-            button.image = createGaugeImage(usagePercent: 0, periodPercent: 0)
+            button.image = createGaugeImage(sessionUsagePercent: 0, sessionPeriodPercent: 0, weeklyUsagePercent: 0, weeklyPeriodPercent: 0)
             button.action = #selector(togglePopover)
             button.target = self
         }
@@ -189,122 +195,138 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
         if let usage = usageManager.usage {
             button.image = createGaugeImage(
-                usagePercent: usage.sessionPercentage,
-                periodPercent: usage.sessionPeriodProgress ?? 0
+                sessionUsagePercent: usage.sessionPercentage,
+                sessionPeriodPercent: usage.sessionPeriodProgress ?? 0,
+                weeklyUsagePercent: usage.weeklyPercentage,
+                weeklyPeriodPercent: usage.weeklyPeriodProgress ?? 0
             )
             button.title = ""
         } else if usageManager.error != nil {
-            button.image = createGaugeImage(usagePercent: 0, periodPercent: 0, showErrorDot: true)
+            button.image = createGaugeImage(sessionUsagePercent: 0, sessionPeriodPercent: 0, weeklyUsagePercent: 0, weeklyPeriodPercent: 0, showError: true)
             button.title = ""
         } else {
             // No data yet and not loading - show empty gauge
-            button.image = createGaugeImage(usagePercent: 0, periodPercent: 0)
+            button.image = createGaugeImage(sessionUsagePercent: 0, sessionPeriodPercent: 0, weeklyUsagePercent: 0, weeklyPeriodPercent: 0)
             button.title = ""
         }
     }
 
-    func createGaugeImage(usagePercent: Int, periodPercent: Int, showErrorDot: Bool = false, loadingDotOpacity: CGFloat? = nil) -> NSImage {
+    func createGaugeImage(
+        sessionUsagePercent: Int, sessionPeriodPercent: Int,
+        weeklyUsagePercent: Int, weeklyPeriodPercent: Int,
+        showError: Bool = false, loadingOpacity: CGFloat? = nil
+    ) -> NSImage {
         let height: CGFloat = 18
-        let barWidth: CGFloat = 16
-        let spacing: CGFloat = 3
+        let barHeight: CGFloat = 6.5
+        let rowGap: CGFloat = 4
+        let labelBarGap: CGFloat = 2
+        let barWidth: CGFloat = 20
 
-        // Measure text width dynamically
-        let displayText = showErrorDot ? "!" : "\(usagePercent)%"
-        let font = showErrorDot
-            ? NSFont.monospacedDigitSystemFont(ofSize: 12, weight: .bold)
-            : NSFont.monospacedDigitSystemFont(ofSize: 10, weight: .medium)
-        let textAttributes: [NSAttributedString.Key: Any] = [.font: font]
-        let textSize = displayText.size(withAttributes: textAttributes)
-        let textWidth = ceil(textSize.width)
+        let labelFont = NSFont.monospacedSystemFont(ofSize: 8, weight: .medium)
+        let labelAttrs: [NSAttributedString.Key: Any] = [.font: labelFont]
+        let label5h = "5H"
+        let label7d = "7D"
+        let label5hSize = label5h.size(withAttributes: labelAttrs)
+        let label7dSize = label7d.size(withAttributes: labelAttrs)
+        let labelWidth = ceil(max(label5hSize.width, label7dSize.width))
 
-        let totalWidth = barWidth + spacing + textWidth + 1  // +1 for right margin
+        let totalWidth = labelWidth + labelBarGap + barWidth + 1
+
         let image = NSImage(size: NSSize(width: totalWidth, height: height))
 
-        // Horizontal bar layout
-        let horizontalPadding: CGFloat = 1
-        let usageBarHeight: CGFloat = 3
-        let periodBarHeight: CGFloat = 2
-        let gap: CGFloat = 2
+        // Vertical layout: two rows centered
+        let totalRowsHeight = barHeight * 2 + rowGap
+        let topRowY = (height + totalRowsHeight) / 2 - barHeight
+        let bottomRowY = topRowY - rowGap - barHeight
 
-        // Vertical centering for bars
-        let totalBarHeight = usageBarHeight + gap + periodBarHeight
-        let topY = (height + totalBarHeight) / 2 - usageBarHeight
-        let bottomY = topY - gap - periodBarHeight
+        let barX = labelWidth + labelBarGap
 
         // Set appearance context for correct color resolution
-        let appearance = statusItem?.button?.effectiveAppearance ?? NSAppearance.current ?? NSAppearance(named: .aqua)!
-        let previousAppearance = NSAppearance.current
-        NSAppearance.current = appearance
-
-        // Use semantic color that adapts to the current appearance
-        let primaryColor = NSColor.labelColor
+        let appearance = statusItem?.button?.effectiveAppearance ?? NSAppearance(named: .aqua)!
 
         image.lockFocus()
 
-        // Usage bar - background
-        let effectiveBarWidth = barWidth - (horizontalPadding * 2)
-        let usageBgRect = NSRect(x: horizontalPadding, y: topY, width: effectiveBarWidth, height: usageBarHeight)
-        let usageBgPath = NSBezierPath(roundedRect: usageBgRect, xRadius: usageBarHeight / 2, yRadius: usageBarHeight / 2)
-        primaryColor.withAlphaComponent(0.5).setFill()
-        usageBgPath.fill()
+        // Use the appearance context for correct color resolution
+        appearance.performAsCurrentDrawingAppearance {
+            let primaryColor = NSColor.labelColor
+            let barAlpha: CGFloat = loadingOpacity ?? 1.0
 
-        // Usage bar - filled
-        if usagePercent > 0 {
-            let usageFillWidth = effectiveBarWidth * CGFloat(min(usagePercent, 100)) / 100.0
-            let usageFillRect = NSRect(x: horizontalPadding, y: topY, width: usageFillWidth, height: usageBarHeight)
-            let usageFillPath = NSBezierPath(roundedRect: usageFillRect, xRadius: usageBarHeight / 2, yRadius: usageBarHeight / 2)
-            primaryColor.withAlphaComponent(0.9).setFill()
-            usageFillPath.fill()
-        }
+            // Helper to draw a single gauge row
+            func drawGaugeRow(y: CGFloat, label: String, labelSize: NSSize, usagePercent: Int, periodPercent: Int) {
+                let isOverage = usagePercent > periodPercent
+                let labelColor = showError ? NSColor.red : (isOverage ? NSColor.orange : primaryColor)
 
-        // Period bar - background (same color as usage, just thinner)
-        let periodBgRect = NSRect(x: horizontalPadding, y: bottomY, width: effectiveBarWidth, height: periodBarHeight)
-        let periodBgPath = NSBezierPath(roundedRect: periodBgRect, xRadius: periodBarHeight / 2, yRadius: periodBarHeight / 2)
-        primaryColor.withAlphaComponent(0.5).setFill()
-        periodBgPath.fill()
+                // Draw label
+                let labelY = y + (barHeight - labelSize.height) / 2
+                let labelDrawAttrs: [NSAttributedString.Key: Any] = [
+                    .font: labelFont,
+                    .foregroundColor: labelColor.withAlphaComponent(barAlpha)
+                ]
+                label.draw(at: NSPoint(x: 0, y: labelY), withAttributes: labelDrawAttrs)
 
-        // Period bar - filled
-        if periodPercent > 0 {
-            let periodFillWidth = effectiveBarWidth * CGFloat(min(periodPercent, 100)) / 100.0
-            let periodFillRect = NSRect(x: horizontalPadding, y: bottomY, width: periodFillWidth, height: periodBarHeight)
-            let periodFillPath = NSBezierPath(roundedRect: periodFillRect, xRadius: periodBarHeight / 2, yRadius: periodBarHeight / 2)
-            primaryColor.withAlphaComponent(0.9).setFill()
-            periodFillPath.fill()
-        }
+                // 1. Background bar (full width, faint)
+                let bgRect = NSRect(x: barX, y: y, width: barWidth, height: barHeight)
+                let bgPath = NSBezierPath(roundedRect: bgRect, xRadius: 1, yRadius: 1)
 
-        // Draw percentage text (or exclamation mark for error state)
-        let drawAttributes: [NSAttributedString.Key: Any] = [
-            .font: font,
-            .foregroundColor: primaryColor
-        ]
-        let textX = barWidth + spacing
-        let textY = (height - textSize.height) / 2
-        displayText.draw(at: NSPoint(x: textX, y: textY), withAttributes: drawAttributes)
+                if showError {
+                    NSColor.red.withAlphaComponent(0.3).setFill()
+                } else {
+                    primaryColor.withAlphaComponent(0.15 * barAlpha).setFill()
+                }
+                bgPath.fill()
 
-        // Status indicator dot in lower right (of the bar area)
-        let dotSize: CGFloat = 6
-        let dotCenter = NSPoint(x: barWidth - dotSize / 2, y: dotSize / 2 + 1)
-        let dotRect = NSRect(
-            x: dotCenter.x - dotSize / 2,
-            y: dotCenter.y - dotSize / 2,
-            width: dotSize,
-            height: dotSize
-        )
+                // Error state: fill bars fully red
+                if showError {
+                    let fillRect = NSRect(x: barX, y: y, width: barWidth, height: barHeight)
+                    let fillPath = NSBezierPath(roundedRect: fillRect, xRadius: 1, yRadius: 1)
+                    NSColor.red.withAlphaComponent(0.6).setFill()
+                    fillPath.fill()
+                    return
+                }
 
-        if showErrorDot {
-            let dotPath = NSBezierPath(ovalIn: dotRect)
-            NSColor.red.setFill()
-            dotPath.fill()
-        } else if let opacity = loadingDotOpacity {
-            let dotPath = NSBezierPath(ovalIn: dotRect)
-            NSColor.systemGreen.withAlphaComponent(opacity).setFill()
-            dotPath.fill()
+                // 2. Period progress fill
+                if periodPercent > 0 {
+                    let periodWidth = barWidth * CGFloat(min(periodPercent, 100)) / 100.0
+                    let periodRect = NSRect(x: barX, y: y, width: periodWidth, height: barHeight)
+                    let periodPath = NSBezierPath(roundedRect: periodRect, xRadius: 1, yRadius: 1)
+                    primaryColor.withAlphaComponent(0.4 * barAlpha).setFill()
+                    periodPath.fill()
+                }
+
+                // 3. Usage fill (clamped to period extent)
+                if usagePercent > 0 {
+                    let usageClamped = min(usagePercent, periodPercent)
+                    if usageClamped > 0 {
+                        let usageWidth = barWidth * CGFloat(min(usageClamped, 100)) / 100.0
+                        let usageRect = NSRect(x: barX, y: y, width: usageWidth, height: barHeight)
+                        let usagePath = NSBezierPath(roundedRect: usageRect, xRadius: 1, yRadius: 1)
+                        primaryColor.withAlphaComponent(0.85 * barAlpha).setFill()
+                        usagePath.fill()
+                    }
+                }
+
+                // 4. Overage: usage beyond period in red
+                if isOverage {
+                    let periodWidth = barWidth * CGFloat(min(periodPercent, 100)) / 100.0
+                    let usageWidth = barWidth * CGFloat(min(usagePercent, 100)) / 100.0
+                    let overageWidth = usageWidth - periodWidth
+                    if overageWidth > 0 {
+                        let overageRect = NSRect(x: barX + periodWidth, y: y, width: overageWidth, height: barHeight)
+                        let overagePath = NSBezierPath(roundedRect: overageRect, xRadius: 1, yRadius: 1)
+                        NSColor.orange.withAlphaComponent(barAlpha).setFill()
+                        overagePath.fill()
+                    }
+                }
+            }
+
+            // Top row: 5h (session)
+            drawGaugeRow(y: topRowY, label: label5h, labelSize: label5hSize, usagePercent: sessionUsagePercent, periodPercent: sessionPeriodPercent)
+
+            // Bottom row: 7d (weekly)
+            drawGaugeRow(y: bottomRowY, label: label7d, labelSize: label7dSize, usagePercent: weeklyUsagePercent, periodPercent: weeklyPeriodPercent)
         }
 
         image.unlockFocus()
-
-        // Restore previous appearance
-        NSAppearance.current = previousAppearance
 
         image.isTemplate = false
         return image
